@@ -17,23 +17,29 @@
 
 /**
  * micro-ROS node: WiFi XRCE transport, gaze subscription, status publisher.
+ * Init/reconnect is non-blocking so idle eye animation keeps running.
  */
 class MicroRosEyeNode : public IFreshGazeProvider {
  public:
   static constexpr uint32_t kGazeTimeoutMs = 500;
   static constexpr uint32_t kStatusPeriodMs = 1000;
-  static constexpr uint32_t kEntityRetryIntervalMs = 2000;
+  /** Backoff between agent ping / entity create attempts. */
+  static constexpr uint32_t kEntityRetryIntervalMs = 8000;
+  /** Short ping so a missing agent does not stall the render loop. */
+  static constexpr int kAgentPingTimeoutMs = 50;
+  static constexpr uint8_t kAgentPingAttempts = 1;
 
   /** Constructs an idle micro-ROS eye node. */
   MicroRosEyeNode();
 
   /**
-   * Connects WiFi transport and attempts entity creation.
-   * @return true when the session reaches Ready
+   * Stores agent credentials and arms async connect (no blocking WiFi wait).
+   * Requires station WiFi already joining/joined (e.g. via OtaUpdateService).
+   * @return true when credentials look usable
    */
   bool begin(const NetworkCredentials& credentials);
 
-  /** Spins the executor and retries entity creation with backoff when needed. */
+  /** Spins / retries without long stalls when agent or WiFi is absent. */
   void update(uint32_t now_ms);
 
   /** True when a gaze message arrived within the timeout window. */
@@ -49,6 +55,7 @@ class MicroRosEyeNode : public IFreshGazeProvider {
   MicroRosSessionState sessionState() const;
 
  private:
+  bool ensureTransportConfigured();
   bool createEntities();
   void destroyEntities();
   static void onGazeMessage(const void* message_void);
@@ -73,7 +80,10 @@ class MicroRosEyeNode : public IFreshGazeProvider {
   uint32_t last_status_ms_;
   uint32_t next_entity_retry_ms_;
   bool blink_requested_;
-  bool transport_started_;
+  bool transport_configured_;
+  bool credentials_valid_;
   MicroRosSessionState session_state_;
   uint8_t entities_init_depth_;
+  uint16_t agent_port_;
+  char agent_ip_[16];
 };

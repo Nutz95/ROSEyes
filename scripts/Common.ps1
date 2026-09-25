@@ -125,8 +125,46 @@ function Get-RoseeyesUploadEnvName {
   return $EnvName
 }
 
+# Locates Arduino espota.py under the PlatformIO packages tree.
+function Get-RoseeyesEspotaScript {
+  $packages = Join-Path $env:USERPROFILE ".platformio\packages"
+  $hit = Get-ChildItem -Path $packages -Recurse -Filter "espota.py" -ErrorAction SilentlyContinue |
+    Select-Object -First 1
+  if (-not $hit) {
+    throw "espota.py not found under $packages (install an espressif32 PlatformIO platform once)."
+  }
+  return $hit.FullName
+}
+
+# OTA-upload a prebuilt firmware.bin without invoking PlatformIO rebuild
+# (critical after WSL micro-ROS builds — Windows cannot rebuild libmicroros).
+function Invoke-RoseeyesPrebuiltOtaUpload {
+  param(
+    [Parameter(Mandatory = $true)][string]$FirmwareBin,
+    [Parameter(Mandatory = $true)][string]$OtaIp,
+    [int]$OtaPort = 3232
+  )
+
+  if (-not (Test-Path $FirmwareBin)) {
+    throw "Prebuilt firmware not found: $FirmwareBin"
+  }
+
+  $espota = Get-RoseeyesEspotaScript
+  $python = Join-Path $env:USERPROFILE ".platformio\penv\Scripts\python.exe"
+  if (-not (Test-Path $python)) {
+    $python = "python"
+  }
+
+  Write-Host "OTA upload (prebuilt, no rebuild) via espota to ${OtaIp}:$OtaPort"
+  Write-Host "  bin: $FirmwareBin"
+  Write-Host "  espota: $espota"
+  & $python $espota -i $OtaIp -p $OtaPort -f $FirmwareBin
+  return [int]$LASTEXITCODE
+}
+
 # Uploads via serial or espota (dedicated PlatformIO envs, no --project-option).
 # Always uses -d ProjectDir so the caller's working directory is unchanged.
+# For WSL-built micro-ROS images, prefer Invoke-RoseeyesPrebuiltOtaUpload instead.
 function Invoke-RoseeyesUpload {
   param(
     [Parameter(Mandatory = $true)][string]$Pio,

@@ -34,9 +34,11 @@ MicroRosEyeNode::MicroRosEyeNode()
       last_status_ms_(0),
       next_entity_retry_ms_(0),
       blink_requested_(false),
-      transport_started_(false),
+      transport_configured_(false),
+      credentials_valid_(false),
       session_state_(MicroRosSessionState::IdleOnly),
-      entities_init_depth_(kStepNone) {
+      entities_init_depth_(kStepNone),
+      agent_port_(8888) {
   memset(&support_, 0, sizeof(support_));
   memset(&node_, 0, sizeof(node_));
   memset(&gaze_subscription_, 0, sizeof(gaze_subscription_));
@@ -47,41 +49,80 @@ MicroRosEyeNode::MicroRosEyeNode()
   memset(&blink_message_, 0, sizeof(blink_message_));
   memset(&status_message_, 0, sizeof(status_message_));
   memset(status_buffer_, 0, sizeof(status_buffer_));
+  agent_ip_[0] = '\0';
   received_gaze_.setNormalized(0.0f, 0.0f);
 }
 
 bool MicroRosEyeNode::begin(const NetworkCredentials& credentials) {
   active_instance_ = this;
+  transport_configured_ = false;
+  credentials_valid_ = false;
   session_state_ = MicroRosSessionState::Connecting;
 
-  IPAddress agent_ip;
-  if (!agent_ip.fromString(credentials.agent_ip)) {
+  IPAddress parsed_ip;
+  if (!parsed_ip.fromString(credentials.agent_ip)) {
     Serial.printf("Invalid agent IP: %s\n", credentials.agent_ip);
     session_state_ = MicroRosSessionState::Faulted;
     return false;
   }
 
-  Serial.printf("Connecting WiFi SSID=%s ...\n", credentials.wifi_ssid);
-  set_microros_wifi_transports(const_cast<char*>(credentials.wifi_ssid),
-                               const_cast<char*>(credentials.wifi_password),
-                               agent_ip, credentials.agent_port);
-  delay(2000);
-  transport_started_ = true;
+  strncpy(agent_ip_, credentials.agent_ip, sizeof(agent_ip_) - 1);
+  agent_ip_[sizeof(agent_ip_) - 1] = '\0';
+  agent_port_ = credentials.agent_port;
+  credentials_valid_ = true;
   allocator_ = rcl_get_default_allocator();
+  next_entity_retry_ms_ = 0;
 
-  if (!createEntities()) {
-    Serial.println("micro-ROS entity creation failed; will retry in update()");
-    next_entity_retry_ms_ = millis() + kEntityRetryIntervalMs;
+  Serial.printf(
+      "micro-ROS: async connect to agent %s:%u (idle eyes keep running)\n",
+      agent_ip_, agent_port_);
+  return true;
+}
+
+bool MicroRosEyeNode::ensureTransportConfigured() {
+  if (transport_configured_) {
+    return true;
+  }
+  if (WiFi.status() != WL_CONNECTED) {
     return false;
   }
 
-  session_state_ = MicroRosSessionState::Ready;
-  Serial.println("micro-ROS entities ready");
+  // Do NOT call set_microros_wifi_transports(): it WiFi.begin()s again and
+  // busy-waits forever when association fails.
+  static micro_ros_agent_locator locator;
+  if (!locator.address.fromString(agent_ip_)) {
+    Serial.printf("micro-ROS: bad agent IP %s\n", agent_ip_);
+    return false;
+  }
+  locator.port = static_cast<int>(agent_port_);
+
+  rmw_uros_set_custom_transport(
+      false, static_cast<void*>(&locator), platformio_transport_open,
+      platformio_transport_close, platformio_transport_write,
+      platformio_transport_read);
+
+  transport_configured_ = true;
+  Serial.println("micro-ROS: UDP transport configured (WiFi already up)");
   return true;
 }
 
 void MicroRosEyeNode::update(uint32_t now_ms) {
-  if (!transport_started_) {
+  if (!credentials_valid_ ||
+      session_state_ == MicroRosSessionState::Faulted ||
+      session_state_ == MicroRosSessionState::IdleOnly) {
+    return;
+  }
+
+  if (WiFi.status() != WL_CONNECTED) {
+    if (session_state_ == MicroRosSessionState::Ready) {
+      destroyEntities();
+      session_state_ = MicroRosSessionState::Connecting;
+      Serial.println("micro-ROS: WiFi lost; session paused");
+    }
+    return;
+  }
+
+  if (!ensureTransportConfigured()) {
     return;
   }
 
@@ -90,14 +131,23 @@ void MicroRosEyeNode::update(uint32_t now_ms) {
       return;
     }
     next_entity_retry_ms_ = now_ms + kEntityRetryIntervalMs;
+
+    // Cheap probe — avoids rclc_support_init blocking for seconds on no agent.
+    if (rmw_uros_ping_agent(kAgentPingTimeoutMs, kAgentPingAttempts) !=
+        RMW_RET_OK) {
+      return;
+    }
+
     if (createEntities()) {
       session_state_ = MicroRosSessionState::Ready;
-      Serial.println("micro-ROS entities ready (retry)");
+      Serial.println("micro-ROS entities ready");
+    } else {
+      Serial.println("micro-ROS entity create failed; will retry");
     }
     return;
   }
 
-  rclc_executor_spin_some(&executor_, RCL_MS_TO_NS(10));
+  rclc_executor_spin_some(&executor_, RCL_MS_TO_NS(5));
 
   if (now_ms - last_status_ms_ >= kStatusPeriodMs) {
     last_status_ms_ = now_ms;
@@ -106,7 +156,15 @@ void MicroRosEyeNode::update(uint32_t now_ms) {
     status_message_.data.data = status_buffer_;
     status_message_.data.size = strlen(status_buffer_);
     status_message_.data.capacity = sizeof(status_buffer_);
-    rcl_publish(&status_publisher_, &status_message_, nullptr);
+    const rcl_ret_t publish_result =
+        rcl_publish(&status_publisher_, &status_message_, nullptr);
+    if (publish_result != RCL_RET_OK) {
+      // Agent gone mid-session — drop to connecting without stalling render.
+      destroyEntities();
+      session_state_ = MicroRosSessionState::Connecting;
+      next_entity_retry_ms_ = now_ms + kEntityRetryIntervalMs;
+      Serial.println("micro-ROS: publish failed; session paused");
+    }
   }
 }
 
@@ -216,24 +274,21 @@ void MicroRosEyeNode::destroyEntities() {
     rclc_executor_fini(&executor_);
   }
   if (entities_init_depth_ >= kStepStatusPub) {
-    rcl_publisher_fini(&status_publisher_, &node_);
+    (void)rcl_publisher_fini(&status_publisher_, &node_);
   }
   if (entities_init_depth_ >= kStepBlinkSub) {
-    rcl_subscription_fini(&blink_subscription_, &node_);
+    (void)rcl_subscription_fini(&blink_subscription_, &node_);
   }
   if (entities_init_depth_ >= kStepGazeSub) {
-    rcl_subscription_fini(&gaze_subscription_, &node_);
+    (void)rcl_subscription_fini(&gaze_subscription_, &node_);
   }
   if (entities_init_depth_ >= kStepNode) {
-    rcl_node_fini(&node_);
+    (void)rcl_node_fini(&node_);
   }
   if (entities_init_depth_ >= kStepSupport) {
     rclc_support_fini(&support_);
   }
   entities_init_depth_ = kStepNone;
-  if (session_state_ == MicroRosSessionState::Ready) {
-    session_state_ = MicroRosSessionState::Connecting;
-  }
 }
 
 void MicroRosEyeNode::onGazeMessage(const void* message_void) {

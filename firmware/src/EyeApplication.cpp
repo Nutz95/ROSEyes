@@ -34,11 +34,12 @@ void EyeApplication::setup() {
   }
   force_redraw_ = true;
   renderIfDirty();
-  Serial.println("Displays initialized");
+  Serial.println("Displays initialized (idle animation continues during WiFi/ROS)");
 
   NetworkCredentials credentials;
   const bool have_credentials = credential_store_.loadOrSeed(credentials);
   if (have_credentials) {
+    // Non-blocking: association + OTA happen in loop via handle().
     ota_service_.begin(credentials);
   } else {
     Serial.println(
@@ -54,8 +55,9 @@ void EyeApplication::setup() {
 
   Serial.printf("Using agent %s:%u\n", credentials.agent_ip,
                 credentials.agent_port);
+  // Non-blocking: entity create waits for WiFi + agent ping in update().
   if (!micro_ros_node_.begin(credentials)) {
-    Serial.println("micro-ROS begin deferred; idle eyes remain active");
+    Serial.println("micro-ROS begin rejected credentials; idle eyes active");
   }
 #else
   Serial.println("Built without micro-ROS (eyes-only). Idle blink active.");
