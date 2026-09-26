@@ -28,4 +28,5 @@ class GazeSource {
  private:
   IdleEyeBehavior& idle_behavior_;
   const IFreshGazeProvider* external_provider_;
+  bool was_using_external_;
 };

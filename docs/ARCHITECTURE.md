@@ -7,7 +7,7 @@ flowchart LR
   Xbox[Xbox_pygame_publisher]
   MaixCam[MaixCam_ball_tracker_future]
   HostRos[ROS2_lyrical_host]
-  Agent[micro_ros_agent_Docker_jazzy_UDP8888]
+  Agent[MicroXRCEAgent_Windows_UDP8888]
   Esp[XIAO_ESP32S3_Sense]
   Eyes[Dual_GC9D01]
   Nvs[NVS_credentials]
@@ -66,7 +66,7 @@ flowchart TB
 | `EyeRenderer` | Cartoon eye drawing / blink frame |
 | `GazeState` | Normalized [-1,1] ↔ pixel offsets |
 | `BlinkScheduler` | Random 2–3 s blink timing |
-| `IdleEyeBehavior` | Slow left/right idle when ROS silent |
+| `IdleEyeBehavior` | Random 2D saccades + fixations when ROS silent |
 | `WifiCredentialStore` | NVS load/seed/save (`loadOrSeed`) |
 | `MicroRosEyeNode` | WiFi transport, sub/pub, atomic entity lifecycle |
 | `EyeApplication` | Orchestration + dirty-state rendering |
@@ -105,7 +105,8 @@ sequenceDiagram
 - **`eyes/status`** (`std_msgs/msg/String`): ~1 Hz heartbeat
 
 micro-ROS client distro: **jazzy** (`board_microros_distro`).  
-Host tools on this workspace target **ROS 2 lyrical** (`I:\ROS\ros2-windows`).
+Host tools expect **ROS 2** via `$env:ROS2_WINDOWS_SETUP` (path to `setup.ps1`).
+On this workspace ROS 2 is activated via `ROS2_WINDOWS_SETUP` (see `Activate-Ros.ps1`).
 
 ## Future work
 

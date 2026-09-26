@@ -9,6 +9,7 @@ Guidance for coding agents and human contributors.
 - Document every **public** method (including constructors) with `/** ... */`.
 - Prefer meaningful identifiers; short names allowed only for `x/y/z/w/h` and similar geometry locals on the allowlist in `tests/guardrails/run_guardrails.py`.
 - Put secrets only in environment variables (`WIFI_SSID`, `WIFI_PASS`, `MICROROS_AGENT_IP`). Never commit credentials.
+- Set `ROS2_WINDOWS_SETUP` to your ROS 2 `setup.ps1` (or pass `-RosSetup` to `Activate-Ros.ps1` / `Test-Ros.ps1`).
 - Run `scripts/Run-Tests.ps1` after C++ changes.
 - Leave **git commits** to the human unless they explicitly ask.
 
@@ -34,16 +35,15 @@ Guidance for coding agents and human contributors.
 .\scripts\Build-And-Upload-Wsl.ps1 -Port COM16
 .\scripts\Build-And-Upload-Wsl.ps1 -OtaIp 192.168.20.199
 
-# micro-ROS agent
+# micro-ROS agent (native Windows MicroXRCEAgent; first install once)
+.\scripts\Install-MicroRosAgent.ps1
 .\scripts\Start-MicroRosAgent.ps1
 
 # ROS env + sample gaze publish
 .\scripts\Test-Ros.ps1
 
-# Xbox bridge (ROS env must already be active)
-. .\scripts\Activate-Ros.ps1
-pip install -r .\python\requirements.txt
-python .\python\xbox_gaze_publisher.py
+# Xbox → eyes (host ROS + pygame; no Docker)
+.\scripts\Start-XboxGaze.ps1
 ```
 
 ## Firmware notes

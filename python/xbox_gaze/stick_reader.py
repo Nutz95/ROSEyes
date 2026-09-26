@@ -37,6 +37,7 @@ class XboxGazeStickReader:
         self._joystick = pygame.joystick.Joystick(0)
         self._joystick.init()
         self._previous_button_a = False
+        print(f"controller: {self._joystick.get_name()}", flush=True)
 
     def close(self) -> None:
         """Shuts down pygame."""

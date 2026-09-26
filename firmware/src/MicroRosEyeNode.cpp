@@ -33,6 +33,8 @@ MicroRosEyeNode::MicroRosEyeNode()
       last_gaze_ms_(0),
       last_status_ms_(0),
       next_entity_retry_ms_(0),
+      first_publish_fail_ms_(0),
+      publish_fail_count_(0),
       blink_requested_(false),
       transport_configured_(false),
       credentials_valid_(false),
@@ -158,12 +160,28 @@ void MicroRosEyeNode::update(uint32_t now_ms) {
     status_message_.data.capacity = sizeof(status_buffer_);
     const rcl_ret_t publish_result =
         rcl_publish(&status_publisher_, &status_message_, nullptr);
-    if (publish_result != RCL_RET_OK) {
-      // Agent gone mid-session — drop to connecting without stalling render.
-      destroyEntities();
-      session_state_ = MicroRosSessionState::Connecting;
-      next_entity_retry_ms_ = now_ms + kEntityRetryIntervalMs;
-      Serial.println("micro-ROS: publish failed; session paused");
+    if (publish_result == RCL_RET_OK) {
+      publish_fail_count_ = 0;
+      first_publish_fail_ms_ = 0;
+    } else {
+      // Under Xbox-rate XRCE traffic the UDP TX path often returns ENOMEM once;
+      // do not destroy the whole session on the first blip.
+      if (publish_fail_count_ == 0) {
+        first_publish_fail_ms_ = now_ms;
+      }
+      if (publish_fail_count_ < 255) {
+        ++publish_fail_count_;
+      }
+      const bool grace_elapsed =
+          (now_ms - first_publish_fail_ms_) >= kPublishFailGraceMs;
+      if (publish_fail_count_ >= kPublishFailLimit && grace_elapsed) {
+        destroyEntities();
+        session_state_ = MicroRosSessionState::Connecting;
+        next_entity_retry_ms_ = now_ms + kEntityRetryIntervalMs;
+        publish_fail_count_ = 0;
+        first_publish_fail_ms_ = 0;
+        Serial.println("micro-ROS: publish failed; session paused");
+      }
     }
   }
 }
@@ -172,6 +190,7 @@ bool MicroRosEyeNode::hasFreshGaze(uint32_t now_ms) const {
   if (session_state_ != MicroRosSessionState::Ready || last_gaze_ms_ == 0) {
     return false;
   }
+  // EyeApplication refreshes now_ms after update() so age stays monotonic.
   return (now_ms - last_gaze_ms_) <= kGazeTimeoutMs;
 }
 
@@ -264,6 +283,8 @@ bool MicroRosEyeNode::createEntities() {
   entities_init_depth_ = kStepBlinkCallback;
 
   memset(&status_message_, 0, sizeof(status_message_));
+  publish_fail_count_ = 0;
+  first_publish_fail_ms_ = 0;
   return true;
 }
 
@@ -300,6 +321,13 @@ void MicroRosEyeNode::onGazeMessage(const void* message_void) {
   active_instance_->received_gaze_.setNormalized(
       static_cast<float>(message->x), static_cast<float>(message->y));
   active_instance_->last_gaze_ms_ = ::millis();
+  static uint32_t last_gaze_log_ms = 0;
+  const uint32_t now_ms = ::millis();
+  if ((now_ms - last_gaze_log_ms) >= 250u) {
+    last_gaze_log_ms = now_ms;
+    Serial.printf("gaze %.2f,%.2f\n", static_cast<float>(message->x),
+                  static_cast<float>(message->y));
+  }
 }
 
 void MicroRosEyeNode::onBlinkMessage(const void* /*message_void*/) {

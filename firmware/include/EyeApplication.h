@@ -1,5 +1,7 @@
 #pragma once
 
+#include <stdint.h>
+
 #include "ArduinoClock.h"
 #include "BlinkScheduler.h"
 #include "DualEyeDisplay.h"
@@ -27,10 +29,18 @@ class EyeApplication {
   static constexpr uint32_t kBlinkMinIntervalMs = 2200;
   static constexpr uint32_t kBlinkMaxIntervalMs = 3800;
   static constexpr uint32_t kBlinkDurationMs = 260;
-  static constexpr uint32_t kIdleHorizontalPeriodMs = 6000;
-  static constexpr float kIdleMaxNormalizedOffset = 0.35f;
+  static constexpr uint32_t kIdleSaccadeMinMs = 350;
+  static constexpr uint32_t kIdleSaccadeMaxMs = 780;
+  static constexpr uint32_t kIdleFixationMinMs = 650;
+  static constexpr uint32_t kIdleFixationMaxMs = 2400;
+  /** Idle roam radius — same [-1,1] envelope as joystick / ROS gaze. */
+  static constexpr float kIdleMaxNormalizedOffset = 1.0f;
   static constexpr float kGazeDirtyEpsilon = 0.008f;
   static constexpr float kLidDirtyEpsilon = 0.015f;
+  /** Serial CDC settle delay before the first boot banner. */
+  static constexpr uint32_t kSerialSettleMs = 500;
+  /** Period for the wifi/ros/gaze heartbeat line on Serial. */
+  static constexpr uint32_t kHeartbeatPeriodMs = 2000;
 
   /** Constructs the application with default blink and idle timings. */
   EyeApplication();
@@ -61,4 +71,5 @@ class EyeApplication {
   float last_lid_closure_;
   float last_drawn_gaze_x_;
   float last_drawn_gaze_y_;
+  uint32_t last_heartbeat_ms_;
 };

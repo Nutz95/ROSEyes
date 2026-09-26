@@ -47,6 +47,7 @@ __pycache__/
 venv/
 .env
 .pytest_cache/
+python/.roseyes_ros_pygame.sha256
 
 # Temp / IDE
 *.tmp

@@ -21,10 +21,16 @@
  */
 class MicroRosEyeNode : public IFreshGazeProvider {
  public:
-  static constexpr uint32_t kGazeTimeoutMs = 500;
-  static constexpr uint32_t kStatusPeriodMs = 1000;
+  /** Keep ROS gaze sticky; host pubs can be sparse. Idle after silence. */
+  static constexpr uint32_t kGazeTimeoutMs = 2500;
+  /** Status heartbeat toward the host (keep light — ESP UDP TX is fragile). */
+  static constexpr uint32_t kStatusPeriodMs = 2000;
   /** Backoff between agent ping / entity create attempts. */
   static constexpr uint32_t kEntityRetryIntervalMs = 8000;
+  /** After a status publish fail, wait before tearing the session down. */
+  static constexpr uint32_t kPublishFailGraceMs = 3000;
+  /** Consecutive status publish failures before session reset. */
+  static constexpr uint8_t kPublishFailLimit = 3;
   /** Short ping so a missing agent does not stall the render loop. */
   static constexpr int kAgentPingTimeoutMs = 50;
   static constexpr uint8_t kAgentPingAttempts = 1;
@@ -79,6 +85,8 @@ class MicroRosEyeNode : public IFreshGazeProvider {
   uint32_t last_gaze_ms_;
   uint32_t last_status_ms_;
   uint32_t next_entity_retry_ms_;
+  uint32_t first_publish_fail_ms_;
+  uint8_t publish_fail_count_;
   bool blink_requested_;
   bool transport_configured_;
   bool credentials_valid_;

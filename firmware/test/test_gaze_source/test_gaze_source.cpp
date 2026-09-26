@@ -38,16 +38,17 @@ void tearDown() {}
 
 void test_gaze_source_uses_idle_without_provider() {
   FakeClock clock;
-  IdleEyeBehavior idle(clock, 6000, 0.35f);
+  IdleEyeBehavior idle(clock, 1.0f, 350, 780, 650, 2400);
   GazeSource source(idle, nullptr);
   GazeState gaze;
   source.selectGaze(0, gaze);
-  TEST_ASSERT_TRUE(fabsf(gaze.x()) <= 0.35f + 0.001f);
+  TEST_ASSERT_TRUE(fabsf(gaze.x()) <= 1.0f + 0.001f);
+  TEST_ASSERT_TRUE(fabsf(gaze.y()) <= 1.0f + 0.001f);
 }
 
 void test_gaze_source_prefers_fresh_external() {
   FakeClock clock;
-  IdleEyeBehavior idle(clock, 6000, 0.35f);
+  IdleEyeBehavior idle(clock, 1.0f, 350, 780, 650, 2400);
   StubFreshGazeProvider provider;
   provider.setFresh(true);
   GazeSource source(idle, &provider);
@@ -59,16 +60,16 @@ void test_gaze_source_prefers_fresh_external() {
 
 void test_gaze_source_falls_back_when_stale() {
   FakeClock clock;
-  IdleEyeBehavior idle(clock, 6000, 0.35f);
+  IdleEyeBehavior idle(clock, 1.0f, 350, 780, 650, 2400);
   StubFreshGazeProvider provider;
   provider.setFresh(false);
   GazeSource source(idle, &provider);
   GazeState gaze;
   gaze.setNormalized(0.9f, 0.9f);
   source.selectGaze(100, gaze);
-  // Idle overwrites the previous external-looking values.
-  TEST_ASSERT_TRUE(fabsf(gaze.x()) <= 0.35f + 0.001f);
-  TEST_ASSERT_FLOAT_WITHIN(0.0001f, 0.0f, gaze.y());
+  // Idle syncs from the previous pose within the full normalized roam radius.
+  TEST_ASSERT_TRUE(fabsf(gaze.x()) <= 1.0f + 0.001f);
+  TEST_ASSERT_TRUE(fabsf(gaze.y()) <= 1.0f + 0.001f);
 }
 
 int main(int argc, char** argv) {

@@ -21,9 +21,9 @@ Agent / contributor guide: [AGENTS.md](AGENTS.md)
 
 - Dual 160×160 GC9D01 SPI eyes (modular C++ firmware, PlatformIO)
 - Idle animation + blink without any ROS traffic
-- micro-ROS over WiFi (client **jazzy**, agent Docker `microros/micro-ros-agent:jazzy`)
+- micro-ROS over WiFi (client **jazzy**, agent = native Windows **MicroXRCEAgent**)
 - WiFi / agent credentials seeded at flash time from env vars into **ESP32 NVS**
-- Host tools: PowerShell scripts, Xbox → ROS publisher (pygame)
+- Host tools: PowerShell scripts, Xbox → ROS publisher (pygame + Windows ROS)
 - Native unit tests + source guardrails (1 class / file, size, docs)
 
 TOF I2C is wired and stubbed (`TofRangeSensorStub`) but **not** driven yet.
@@ -35,8 +35,8 @@ TOF I2C is wired and stubbed (`TofRangeSensorStub`) but **not** driven yet.
 ```
 firmware/     PlatformIO project (XIAO + native tests)
 scripts/      PowerShell helpers (ROS, flash, tests, agent)
-python/       Xbox gaze publisher
-docker/       micro-ROS agent compose file
+python/       Xbox / test gaze publishers
+docker/       Legacy micro-ROS agent compose (optional; not required)
 docs/         Architecture
 tests/        Guardrail scripts
 ```
@@ -75,15 +75,17 @@ If panels stay black after a successful flash, tie **BL1/BL2** (backlight) to **
 ## Prerequisites
 
 1. **Python 3** with [PlatformIO](https://platformio.org/): `pip install platformio`
-2. **ROS 2 lyrical** on Windows (this machine: `I:\ROS\ros2-windows`)
-3. **Docker Desktop** (for `micro-ros-agent:jazzy`)
+2. **ROS 2** on Windows with **`ROS2_WINDOWS_SETUP`** set to your `setup.ps1`
+3. **Visual Studio** (C++ workload) + **CMake** — to build native `MicroXRCEAgent` once
 4. **WSL2** (required only for the full micro-ROS firmware env — bash/colcon)
-5. Environment variables (for micro-ROS flashing):
-   - `WIFI_SSID`
-   - `WIFI_PASS`
+5. Environment variables:
+   - `WIFI_SSID` / `WIFI_PASS` (for micro-ROS / OTA flash seeding)
    - `MICROROS_AGENT_IP` (PC LAN IP reachable from the ESP; auto-detected if unset)
    - optional `MICROROS_AGENT_PORT` (default `8888`)
-6. Optional Xbox path: `pip install -r python/requirements.txt` inside an env that also has `rclpy`
+   - **`ROS2_WINDOWS_SETUP`** — absolute path to your ROS 2 `setup.ps1`
+   - optional `MICROROS_AGENT_HOME` / `MICROROS_AGENT_EXE` — override agent install location
+
+Docker Desktop is **not** required anymore.
 
 ---
 
@@ -96,29 +98,25 @@ cd I:\GIT\ROSEyes
 powershell -ExecutionPolicy Bypass -File .\scripts\Run-Tests.ps1
 ```
 
-### 2. Start micro-ROS agent
+### 2. Install + start micro-ROS agent (Windows native, once)
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\Start-MicroRosAgent.ps1
+# First time only (VS + CMake; downloads Fast DDS deps):
+.\scripts\Install-MicroRosAgent.ps1
+
+# Every session:
+.\scripts\Start-MicroRosAgent.ps1
 ```
 
-Uses [docker/docker-compose.agent.yml](docker/docker-compose.agent.yml) (`udp4 --port 8888`).
+Runs `MicroXRCEAgent udp4 --port 8888`. Stops the old Docker agent container if present.
 
 ### 3. Flash the ESP (COM16 by default)
 
 **Eyes-only (Windows-native, recommended first bring-up):**
 
 ```powershell
-# Optional but recommended: seed WiFi into NVS so OTA works after boot
-# ($env:WIFI_SSID / WIFI_PASS already set on this machine)
-
 .\scripts\List-SerialPorts.ps1
-# Normal flash (no buttons) — same auto-reset path as Arduino IDE
 .\scripts\Build-And-Upload.ps1 -Port COM16
-# Fallback only if CDC glitches:
-.\scripts\Build-And-Upload.ps1 -Port COM16 -ManualBootloader
-
-# Later, once serial log shows "OTA: ready at x.x.x.x":
 .\scripts\Build-And-Upload.ps1 -OtaIp 192.168.x.x
 ```
 
@@ -129,18 +127,32 @@ Uses [docker/docker-compose.agent.yml](docker/docker-compose.agent.yml) (`udp4 -
 .\scripts\Build-And-Upload-Wsl.ps1 -OtaIp 192.168.x.x
 ```
 
-### 4. Activate ROS and publish a test gaze
+### 4. Publish a test gaze (host ROS)
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\Test-Ros.ps1 -GazeX 0.7 -GazeY -0.2
+.\scripts\Start-MicroRosAgent.ps1
+.\scripts\Test-Ros.ps1
+
+# Fixed pose:
+.\scripts\Test-Ros.ps1 -FixedGaze -GazeX 0.8 -GazeY -0.4
 ```
 
-Or manually:
+Watch the panels: sweep looks left → right → center. Confirm with:
 
 ```powershell
 . .\scripts\Activate-Ros.ps1
-python .\python\xbox_gaze_publisher.py --invert-y
+ros2 topic echo /eyes/status --once
 ```
+
+### 5. Xbox controller
+
+```powershell
+.\scripts\Start-XboxGaze.ps1
+```
+
+Left stick = gaze, **A** = blink. Uses Windows ROS + pygame (no Docker pipe).
+
+Serial: after OTA, reopen monitor and press reset so CDC prints `hb ...` / `gaze ...`.
 
 ---
 
@@ -152,19 +164,7 @@ python .\python\xbox_gaze_publisher.py --invert-y
 | `eyes/blink` | `std_msgs/msg/Empty` | host → ESP | force one blink |
 | `eyes/status` | `std_msgs/msg/String` | ESP → host | heartbeat / debug |
 
-Gaze timeout: if no `eyes/gaze` for ~500 ms, idle animation resumes.
-
----
-
-## Windows / Docker note
-
-Docker Desktop does not provide Linux-style `--net=host`. The agent publishes UDP `8888` with `-p 8888:8888/udp`. Host `ros2` / `rclpy` (lyrical) may not always share DDS discovery with the jazzy agent container. If `ros2 topic list` does not show eye topics:
-
-1. Confirm the agent container is running and ESP serial logs show WiFi + entity creation.
-2. Use a ROS CLI container sharing the agent network (see `Test-Ros.ps1` fallback message).
-3. Prefer running the Xbox publisher on the same ROS graph the agent exposes.
-
-The ESP still speaks real micro-ROS XRCE-DDS to the agent regardless.
+Gaze timeout: if no `eyes/gaze` for ~2.5 s (e.g. stick released / publisher stopped), idle saccades resume.
 
 ---
 

@@ -11,8 +11,8 @@ EyeApplication::EyeApplication()
       eye_renderer_(display_),
       blink_scheduler_(clock_, kBlinkMinIntervalMs, kBlinkMaxIntervalMs,
                        kBlinkDurationMs),
-      idle_behavior_(clock_, kIdleHorizontalPeriodMs,
-                     kIdleMaxNormalizedOffset),
+      idle_behavior_(clock_, kIdleMaxNormalizedOffset, kIdleSaccadeMinMs,
+                     kIdleSaccadeMaxMs, kIdleFixationMinMs, kIdleFixationMaxMs),
 #if ROSEYES_ENABLE_MICROROS
       gaze_source_(idle_behavior_, &micro_ros_node_),
 #else
@@ -21,12 +21,14 @@ EyeApplication::EyeApplication()
       force_redraw_(true),
       last_lid_closure_(-1.0f),
       last_drawn_gaze_x_(0.0f),
-      last_drawn_gaze_y_(0.0f) {}
+      last_drawn_gaze_y_(0.0f),
+      last_heartbeat_ms_(0) {}
 
 void EyeApplication::setup() {
   Serial.begin(BoardPins::kSerialBaudRate);
-  delay(500);
+  delay(kSerialSettleMs);
   Serial.println("ROSEyes dual-eye firmware starting");
+  Serial.flush();
 
   display_.begin();
   if (!eye_renderer_.begin()) {
@@ -66,10 +68,12 @@ void EyeApplication::setup() {
 
 void EyeApplication::loop() {
   ota_service_.handle();
-  const uint32_t now_ms = clock_.millis();
+  uint32_t now_ms = clock_.millis();
 
 #if ROSEYES_ENABLE_MICROROS
   micro_ros_node_.update(now_ms);
+  // Refresh after executor callbacks so gaze freshness uses a current stamp.
+  now_ms = clock_.millis();
 
   if (micro_ros_node_.consumeBlinkRequest()) {
     blink_scheduler_.requestImmediateBlink();
@@ -79,6 +83,24 @@ void EyeApplication::loop() {
   gaze_source_.selectGaze(now_ms, gaze_state_);
   blink_scheduler_.update();
   renderIfDirty();
+
+  if ((now_ms - last_heartbeat_ms_) >= kHeartbeatPeriodMs) {
+    last_heartbeat_ms_ = now_ms;
+    Serial.printf(
+        "hb wifi=%d ota=%d gaze=%.2f,%.2f lid=%.2f",
+        ota_service_.isWifiConnected() ? 1 : 0,
+        ota_service_.isActive() ? 1 : 0, gaze_state_.x(), gaze_state_.y(),
+        blink_scheduler_.lidClosureAmount());
+#if ROSEYES_ENABLE_MICROROS
+    Serial.printf(" ros=%u ip=%s\n",
+                  static_cast<unsigned>(micro_ros_node_.sessionState()),
+                  ota_service_.localIpCStr());
+#else
+    Serial.printf(" ip=%s\n", ota_service_.localIpCStr());
+#endif
+    Serial.flush();
+  }
+
   delay(kFramePeriodMs);
 }
 

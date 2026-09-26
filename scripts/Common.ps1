@@ -6,6 +6,92 @@ function Escape-CString {
   return $escaped
 }
 
+# Resolves ROS 2 setup.ps1 from -Preferred or $env:ROS2_WINDOWS_SETUP only.
+function Get-RoseeyesRosSetup {
+  param([string]$Preferred = "")
+  foreach ($c in @($Preferred, $env:ROS2_WINDOWS_SETUP)) {
+    if ($c -and $c.Trim() -ne "" -and (Test-Path $c)) {
+      return (Resolve-Path $c).Path
+    }
+  }
+  return $null
+}
+
+# Python that can import rclpy after Activate-Ros.ps1 (override via ROSEYES_ROS_PYTHON).
+function Get-RoseeyesRosPython {
+  if ($env:ROSEYES_ROS_PYTHON -and (Test-Path $env:ROSEYES_ROS_PYTHON)) {
+    return $env:ROSEYES_ROS_PYTHON
+  }
+  return "python"
+}
+
+# Default install root for native MicroXRCEAgent (no hardcoded drive letters).
+# Order: MICROROS_AGENT_HOME, sibling of ROS2_WINDOWS_SETUP's parent, LOCALAPPDATA.
+function Get-RoseeyesMicroXrceAgentHome {
+  if ($env:MICROROS_AGENT_HOME -and $env:MICROROS_AGENT_HOME.Trim() -ne "") {
+    return $env:MICROROS_AGENT_HOME.Trim()
+  }
+  $rosSetup = Get-RoseeyesRosSetup
+  if ($rosSetup) {
+    # .../ros2-windows/setup.ps1 -> .../MicroXRCEAgent
+    $rosInstall = Split-Path -Parent $rosSetup
+    $rosParent = Split-Path -Parent $rosInstall
+    if ($rosParent) {
+      return (Join-Path $rosParent "MicroXRCEAgent")
+    }
+  }
+  return (Join-Path $env:LOCALAPPDATA "ROSEyes\MicroXRCEAgent")
+}
+
+# Locates MicroXRCEAgent.exe via MICROROS_AGENT_EXE, agent home, repo tools, PATH.
+function Resolve-RoseeyesMicroXrceAgentExe {
+  param([string]$Preferred = "")
+  $candidates = @()
+  if ($Preferred) { $candidates += $Preferred }
+  if ($env:MICROROS_AGENT_EXE) { $candidates += $env:MICROROS_AGENT_EXE }
+
+  $agentHome = Get-RoseeyesMicroXrceAgentHome
+  $candidates += @(
+    (Join-Path $agentHome "bin\MicroXRCEAgent.exe")
+    (Join-Path $agentHome "MicroXRCEAgent.exe")
+  )
+
+  $repoRoot = Split-Path -Parent $PSScriptRoot
+  $tools = Join-Path $repoRoot "tools\MicroXRCEAgent"
+  if (Test-Path $tools) {
+    $hit = Get-ChildItem $tools -Recurse -Filter "MicroXRCEAgent.exe" -ErrorAction SilentlyContinue |
+      Select-Object -First 1
+    if ($hit) { $candidates += $hit.FullName }
+  }
+
+  $fromPath = Get-Command MicroXRCEAgent.exe -ErrorAction SilentlyContinue
+  if ($fromPath) { $candidates += $fromPath.Source }
+
+  foreach ($c in $candidates) {
+    if ($c -and (Test-Path $c)) { return (Resolve-Path $c).Path }
+  }
+  return $null
+}
+
+# Dot-sources an unsigned .ps1 under Process Bypass (ROS setup.ps1 is rarely signed).
+function Invoke-RoseeyesDotSource {
+  param([Parameter(Mandatory = $true)][string]$Path)
+  if (-not (Test-Path $Path)) {
+    throw "Script not found: $Path"
+  }
+  $previous = Get-ExecutionPolicy -Scope Process
+  try {
+    Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
+    . $Path
+  } finally {
+    try {
+      Set-ExecutionPolicy -Scope Process -ExecutionPolicy $previous -Force
+    } catch {
+      # Ignore restore failures on locked policies.
+    }
+  }
+}
+
 function Test-IsLikelyWslOrHyperVAddress {
   param([string]$IpAddress)
   # WSL2 / Hyper-V host NICs commonly land in 172.16.0.0/12
@@ -158,8 +244,25 @@ function Invoke-RoseeyesPrebuiltOtaUpload {
   Write-Host "OTA upload (prebuilt, no rebuild) via espota to ${OtaIp}:$OtaPort"
   Write-Host "  bin: $FirmwareBin"
   Write-Host "  espota: $espota"
-  & $python $espota -i $OtaIp -p $OtaPort -f $FirmwareBin
-  return [int]$LASTEXITCODE
+  # espota prints progress on stderr; with $ErrorActionPreference=Stop that becomes a
+  # terminating ErrorRecord when merged via 2>&1 — temporarily continue.
+  $prevEap = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    $otaOut = & $python $espota -i $OtaIp -p $OtaPort -f $FirmwareBin 2>&1
+    $otaCode = [int]$LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $prevEap
+  }
+  foreach ($line in $otaOut) {
+    Write-Host ([string]$line)
+  }
+  if ($otaCode -ne 0) {
+    Write-Error "espota failed (exit $otaCode)"
+  } else {
+    Write-Host "OTA finished OK (exit 0)"
+  }
+  return $otaCode
 }
 
 # Uploads via serial or espota (dedicated PlatformIO envs, no --project-option).

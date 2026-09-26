@@ -1,11 +1,15 @@
+# Legacy optional path — not required for ROSEyes.
+
+# Prefer the native Windows agent:
+#   .\scripts\Install-MicroRosAgent.ps1
+#   .\scripts\Start-MicroRosAgent.ps1
+#
+# This compose file is kept only for environments that already rely on Docker.
 services:
   micro-ros-agent:
     image: microros/micro-ros-agent:jazzy
     container_name: roseyes-micro-ros-agent
     restart: unless-stopped
-    # XRCE UDP agent. Flash MICROROS_AGENT_IP = your *Windows host LAN IP*
-    # (same subnet as the ESP), never 127.0.0.1 / docker0.
-    # OTA (ArduinoOTA :3232) does NOT go through this container — only ROS.
     command: udp4 --port 8888 -v6
     ports:
       - "8888:8888/udp"
