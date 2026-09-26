@@ -10,7 +10,7 @@
  * Camera (OV2640 DVP on Sense FPC):
  *   XCLK=10, SIOD=40, SIOC=39, Y2..Y9, VSYNC=38, HREF=47, PCLK=13
  *
- * TOF reserved (I2C, not driven in this iteration):
+ * TOF Mini (I2C NLink, addr 0x08):
  *   SDA=D4/GPIO5, SCL=D5/GPIO6
  */
 class BoardPins {

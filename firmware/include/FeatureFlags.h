@@ -12,3 +12,8 @@
 #ifndef ROSEYES_ENABLE_CAMERA_BALL
 #define ROSEYES_ENABLE_CAMERA_BALL 0
 #endif
+
+/** Waveshare TOF Mini on soft-I2C (background FreeRTOS task). */
+#ifndef ROSEYES_ENABLE_TOF
+#define ROSEYES_ENABLE_TOF 0
+#endif
