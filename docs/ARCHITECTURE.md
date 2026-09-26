@@ -5,22 +5,28 @@
 ```mermaid
 flowchart LR
   Xbox[Xbox_pygame_publisher]
-  MaixCam[MaixCam_ball_tracker_future]
+  MaixCam[MaixCam_ball_tracker_optional]
   HostRos[ROS2_lyrical_host]
   Agent[MicroXRCEAgent_Windows_UDP8888]
   Esp[XIAO_ESP32S3_Sense]
   Eyes[Dual_GC9D01]
+  Cam[OV2640_Sense_onboard]
   Nvs[NVS_credentials]
   Tof[TOF_Mini_stub]
 
   Xbox -->|eyes/gaze| HostRos
   MaixCam -->|eyes/gaze| HostRos
-  HostRos --> Agent
+  HostRos -->|gaze_blink_mode| Agent
   Agent <-->|XRCE_DDS_UDP| Esp
+  Esp -->|status_ball| Agent
   Esp --> Eyes
+  Esp --> Cam
   Esp --> Nvs
   Esp -.-> Tof
 ```
+
+Onboard camera tracking (dual-core, mode, gaze mux): **[CAMERA_BALL_TRACKING.md](CAMERA_BALL_TRACKING.md)**  
+Topic contracts and host examples: **[ROS_TOPICS.md](ROS_TOPICS.md)**
 
 ## Firmware modules
 
@@ -36,10 +42,12 @@ flowchart TB
   display[DualEyeDisplay]
   driver[Gc9d01Driver]
   renderer[EyeRenderer]
-  gaze[GazeState]
+  gazeSrc[GazeSource]
   blink[BlinkScheduler]
   idle[IdleEyeBehavior]
   rosNode[MicroRosEyeNode]
+  ballProv[BallGazeProvider]
+  vision[BallVisionService]
   store[WifiCredentialStore]
   nvs[NvsKeyValueStore]
 
@@ -47,14 +55,18 @@ flowchart TB
   app --> display
   display --> driver
   app --> renderer
-  renderer --> display
-  app --> gaze
+  app --> gazeSrc
   app --> blink
   app --> idle
   app --> rosNode
+  app --> ballProv
+  app --> vision
   app --> store
   store --> nvs
-  rosNode --> gaze
+  rosNode --> gazeSrc
+  ballProv --> gazeSrc
+  idle --> gazeSrc
+  vision --> ballProv
 ```
 
 ### Responsibility split
@@ -65,10 +77,13 @@ flowchart TB
 | `DualEyeDisplay` | Two CS/RST panels, fill primitives |
 | `EyeRenderer` | Cartoon eye drawing / blink frame |
 | `GazeState` | Normalized [-1,1] ↔ pixel offsets |
+| `GazeSource` | Mux of `IFreshGazeProvider`s + idle fallback |
 | `BlinkScheduler` | Random 2–3 s blink timing |
-| `IdleEyeBehavior` | Random 2D saccades + fixations when ROS silent |
+| `IdleEyeBehavior` | Random 2D saccades + fixations when no fresh provider |
 | `WifiCredentialStore` | NVS load/seed/save (`loadOrSeed`) |
-| `MicroRosEyeNode` | WiFi transport, sub/pub, atomic entity lifecycle |
+| `MicroRosEyeNode` | WiFi XRCE, gaze/blink/mode subs, status/ball pubs |
+| `BallVisionService` | OV2640 + FreeRTOS core1 detect → `BallObservation` |
+| `BallGazeProvider` | Observation → `IFreshGazeProvider` (same contract as ROS gaze) |
 | `EyeApplication` | Orchestration + dirty-state rendering |
 | `TofRangeSensorStub` | Reserved API for later I2C TOF |
 
@@ -82,35 +97,36 @@ sequenceDiagram
   participant Esp as Firmware
   participant Nvs as NVS
   participant Ap as WiFi_AP
-  participant Agent as micro_ros_agent
+  participant Agent as MicroXRCEAgent
 
   Flash->>Esp: firmware + WIFI_* / AGENT_IP seeds
   Esp->>Nvs: load credentials
   alt missing in NVS
     Esp->>Nvs: save seeds from build flags
   end
-  Esp->>Ap: WiFi.begin via micro-ROS transport helper
+  Esp->>Ap: WiFi.begin via OTA / station join
   Esp->>Agent: XRCE session UDP 8888
   Agent-->>Esp: create participant / topics
 ```
 
-## ROS contracts
+## ROS contracts (summary)
 
-- **`eyes/gaze`** (`geometry_msgs/msg/Vector3`)
-  - `x`: look left (−1) … right (+1)
-  - `y`: look up (−1) … down (+1) in display space (Xbox publisher inverts stick Y by default)
-  - `z`: unused (0)
-  - Freshness window: 500 ms
-- **`eyes/blink`** (`std_msgs/msg/Empty`): one-shot blink request
-- **`eyes/status`** (`std_msgs/msg/String`): ~1 Hz heartbeat
+Full tables and copy-paste examples: [ROS_TOPICS.md](ROS_TOPICS.md).
 
-micro-ROS client distro: **jazzy** (`board_microros_distro`).  
-Host tools expect **ROS 2** via `$env:ROS2_WINDOWS_SETUP` (path to `setup.ps1`).
-On this workspace ROS 2 is activated via `ROS2_WINDOWS_SETUP` (see `Activate-Ros.ps1`).
+| Topic | Type | Direction |
+|-------|------|-----------|
+| `eyes/gaze` | `geometry_msgs/msg/Vector3` | host → ESP |
+| `eyes/blink` | `std_msgs/msg/Empty` | host → ESP |
+| `eyes/mode` | `std_msgs/msg/String` (`autonomous` \| `piloted`) | host → ESP |
+| `eyes/status` | `std_msgs/msg/String` | ESP → host |
+| `eyes/ball` | `std_msgs/msg/String` (JSON telemetry) | ESP → host |
+
+Freshness window for gaze / ball lock: **~2.5 s**, then idle saccades.
+
+micro-ROS client distro: **jazzy**. Host: `$env:ROS2_WINDOWS_SETUP` → `Activate-Ros.ps1`.
 
 ## Future work
 
 1. Implement `TofRangeSensorStub` → real Waveshare TOF Mini I2C driver; optionally publish `/eyes/range`.
-2. MaixCam ball tracker publishes `/eyes/gaze` on the robot ROS graph.
+2. Camera ROI search / sticky color lock (see camera doc).
 3. Optional emotion / animation bank from Spotpear demos if RAM allows.
-4. Camera on XIAO Sense (not used in v1).

@@ -23,6 +23,9 @@ Guidance for coding agents and human contributors.
 ## Common commands
 
 ```powershell
+# Host Python (ROS + pygame/Pillow) — run once / when requirements change
+.\scripts\0_setup_python_env.ps1
+
 # Quality + native unit tests
 .\scripts\Run-Tests.ps1
 
@@ -44,6 +47,9 @@ Guidance for coding agents and human contributors.
 
 # Xbox → eyes (host ROS + pygame; no Docker)
 .\scripts\Start-XboxGaze.ps1
+
+# Interactive host ROS menu (debug cockpit, Xbox, mode, echoes)
+.\scripts\Start-RosEyes.ps1
 ```
 
 ## Firmware notes

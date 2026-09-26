@@ -13,6 +13,8 @@ Remote control: publish normalized gaze on `/eyes/gaze` (`geometry_msgs/Vector3`
 | Range (future) | [Waveshare TOF Laser Range Sensor Mini](https://www.waveshare.com/tof-laser-range-sensor-mini.htm) |
 
 Architecture details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)  
+ROS topics + examples: [docs/ROS_TOPICS.md](docs/ROS_TOPICS.md)  
+Onboard camera tracking: [docs/CAMERA_BALL_TRACKING.md](docs/CAMERA_BALL_TRACKING.md)  
 Agent / contributor guide: [AGENTS.md](AGENTS.md)
 
 ---
@@ -25,8 +27,19 @@ Agent / contributor guide: [AGENTS.md](AGENTS.md)
 - WiFi / agent credentials seeded at flash time from env vars into **ESP32 NVS**
 - Host tools: PowerShell scripts, Xbox → ROS publisher (pygame + Windows ROS)
 - Native unit tests + source guardrails (1 class / file, size, docs)
+- Debug cockpit (Tk): gaze pad / Xbox, ball view, JPEG snap, `/eyes/perf`
 
 TOF I2C is wired and stubbed (`TofRangeSensorStub`) but **not** driven yet.
+
+<p align="center">
+  <img src="docs/Gui.png" alt="ROSEyes debug cockpit: ball detection overlay and camera JPEG snap" width="900" />
+</p>
+<p align="center"><em>Debug cockpit — ball lock + on-demand JPEG snap</em></p>
+
+<p align="center">
+  <img src="docs/RosDebugScript.png" alt="Start-RosEyes.ps1 host menu" width="640" />
+</p>
+<p align="center"><em>Host menu (<code>Start-RosEyes.ps1</code>) — launches ROS, agent, and the cockpit</em></p>
 
 ---
 
@@ -37,7 +50,7 @@ firmware/     PlatformIO project (XIAO + native tests)
 scripts/      PowerShell helpers (ROS, flash, tests, agent)
 python/       Xbox / test gaze publishers
 docker/       Legacy micro-ROS agent compose (optional; not required)
-docs/         Architecture
+docs/         Architecture, ROS topics, camera tracking
 tests/        Guardrail scripts
 ```
 
@@ -108,7 +121,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\Run-Tests.ps1
 .\scripts\Start-MicroRosAgent.ps1
 ```
 
-Runs `MicroXRCEAgent udp4 --port 8888`. Stops the old Docker agent container if present.
+Runs `MicroXRCEAgent udp4 --port 8888` (native Windows; no Docker).
 
 ### 3. Flash the ESP (COM16 by default)
 
@@ -129,6 +142,14 @@ Runs `MicroXRCEAgent udp4 --port 8888`. Stops the old Docker agent container if 
 
 ### 4. Publish a test gaze (host ROS)
 
+First time (or after `python/requirements.txt` changes):
+
+```powershell
+.\scripts\0_setup_python_env.ps1
+```
+
+Then:
+
 ```powershell
 .\scripts\Start-MicroRosAgent.ps1
 .\scripts\Test-Ros.ps1
@@ -144,13 +165,13 @@ Watch the panels: sweep looks left → right → center. Confirm with:
 ros2 topic echo /eyes/status --once
 ```
 
-### 5. Xbox controller
+### 5. Host ROS menu (debug cockpit, Xbox, mode, echoes)
 
 ```powershell
-.\scripts\Start-XboxGaze.ps1
+.\scripts\Start-RosEyes.ps1
 ```
 
-Left stick = gaze, **A** = blink. Uses Windows ROS + pygame (no Docker pipe).
+Menu **1** opens the Tk debug cockpit (gaze pad / Xbox, ball detect view, JPEG snap, status/perf). Or Xbox only: `.\scripts\Start-XboxGaze.ps1`. Left stick = gaze, **A** = blink.
 
 Serial: after OTA, reopen monitor and press reset so CDC prints `hb ...` / `gaze ...`.
 
@@ -158,13 +179,20 @@ Serial: after OTA, reopen monitor and press reset so CDC prints `hb ...` / `gaze
 
 ## ROS topics
 
+Full contracts + copy-paste examples: [docs/ROS_TOPICS.md](docs/ROS_TOPICS.md).
+
 | Topic | Type | Direction | Meaning |
 |-------|------|-----------|---------|
 | `eyes/gaze` | `geometry_msgs/msg/Vector3` | host → ESP | `x`/`y` in [-1, 1] (look right / down) |
 | `eyes/blink` | `std_msgs/msg/Empty` | host → ESP | force one blink |
+| `eyes/mode` | `std_msgs/msg/String` | host → ESP | `autonomous` \| `piloted` |
 | `eyes/status` | `std_msgs/msg/String` | ESP → host | heartbeat / debug |
+| `eyes/ball` | `std_msgs/msg/String` | ESP → host | ball telemetry JSON (camera builds) |
+| `eyes/perf` | `std_msgs/msg/String` | ESP → host | heap / loop / WiFi / ball fps JSON |
+| `eyes/camera/snap` | `std_msgs/msg/Empty` | host → ESP | request one JPEG |
+| `eyes/camera/jpeg` | `std_msgs/msg/UInt8MultiArray` | ESP → host | JPEG bytes (on-demand) |
 
-Gaze timeout: if no `eyes/gaze` for ~2.5 s (e.g. stick released / publisher stopped), idle saccades resume.
+Gaze / ball freshness: ~2.5 s without updates → idle saccades.
 
 ---
 
