@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -20,19 +21,25 @@
 #include "NetworkCredentials.h"
 
 /**
- * micro-ROS node: WiFi XRCE transport, gaze/mode/blink/snap, status/ball/jpeg.
+ * micro-ROS node: WiFi XRCE transport, gaze/mode/blink/snap, status/ball/jpeg/range.
  */
 class MicroRosEyeNode : public IFreshGazeProvider {
  public:
   static constexpr uint32_t kGazeTimeoutMs = 2500;
   static constexpr uint32_t kStatusPeriodMs = 2000;
-  static constexpr uint32_t kEntityRetryIntervalMs = 2000;
-  static constexpr uint32_t kAgentAlivePingMs = 2000;
+  static constexpr uint32_t kEntityRetryIntervalMs = 3000;
+  static constexpr uint32_t kEntityRetryAfterDropMs = 4000;
+  static constexpr uint32_t kAgentAlivePingMs = 5000;
   static constexpr uint32_t kPublishFailGraceMs = 3000;
   static constexpr uint8_t kPublishFailLimit = 3;
-  static constexpr int kAgentPingTimeoutMs = 50;
+  /** Need several misses before dropping — single UDP blip must not freeze eyes. */
+  static constexpr uint8_t kAgentPingFailLimit = 3;
+  static constexpr int kAgentPingTimeoutMs = 20;
   static constexpr uint8_t kAgentPingAttempts = 1;
   static constexpr size_t kJpegTxCapacity = CameraJpegMailbox::kMaxBytes;
+  static constexpr uint32_t kReconnectTaskStackWords = 12288;
+  static constexpr uint8_t kReconnectTaskPriority = 1;
+  static constexpr uint8_t kReconnectTaskCore = 0;
 
   /** Constructs an idle micro-ROS eye node. */
   MicroRosEyeNode();
@@ -46,8 +53,18 @@ class MicroRosEyeNode : public IFreshGazeProvider {
   /** Optional JPEG mailbox for /eyes/camera/snap → /eyes/camera/jpeg. */
   void setJpegMailbox(CameraJpegMailbox* mailbox);
 
-  /** Spins / retries without long stalls when agent or WiFi is absent. */
-  void update(uint32_t now_ms);
+  /**
+   * Short executor spin while Ready (gaze/mode/blink/snap). Safe to call
+   * before eye render so input stays fresh without reconnect stalls.
+   */
+  void spinIncoming(uint32_t now_ms);
+
+  /**
+   * Session maintenance on the eye thread: soft alive-ping + status/JPEG only.
+   * destroyEntities/createEntities run on a background FreeRTOS task so XRCE
+   * reconnect cannot freeze blink/render.
+   */
+  void maintainSession(uint32_t now_ms);
 
   /** True when a gaze message arrived within the timeout window. */
   bool hasFreshGaze(uint32_t now_ms) const override;
@@ -80,6 +97,12 @@ class MicroRosEyeNode : public IFreshGazeProvider {
   bool tryPublishPerfJson(const char* json);
 
   /**
+   * Publishes JSON on /eyes/range when the session is Ready.
+   * @return true on successful publish
+   */
+  bool tryPublishRangeJson(const char* json);
+
+  /**
    * Gaze shown in /eyes/status (active mux: ROS / ball / idle), not only last
    * host /eyes/gaze sample.
    */
@@ -98,19 +121,23 @@ class MicroRosEyeNode : public IFreshGazeProvider {
     kStepBallPub = 8,
     kStepJpegPub = 9,
     kStepPerfPub = 10,
-    kStepExecutor = 11,
-    kStepGazeCallback = 12,
-    kStepBlinkCallback = 13,
-    kStepModeCallback = 14,
-    kStepSnapCallback = 15,
+    kStepRangePub = 11,
+    kStepExecutor = 12,
+    kStepGazeCallback = 13,
+    kStepBlinkCallback = 14,
+    kStepModeCallback = 15,
+    kStepSnapCallback = 16,
   };
 
   bool ensureTransportConfigured();
   bool createEntities();
   void destroyEntities();
   void forceAutonomousMode();
-  void dropSessionToConnecting(const char* reason);
+  void dropSessionToConnecting(uint32_t now_ms, const char* reason);
   void publishPendingJpeg();
+  void runReconnectStep(uint32_t now_ms);
+  static void reconnectTaskEntry(void* arg);
+  void reconnectTaskLoop();
   bool tryPublishString(rcl_publisher_t& publisher,
                         std_msgs__msg__String& message, char* buffer,
                         size_t capacity, const char* json);
@@ -132,6 +159,7 @@ class MicroRosEyeNode : public IFreshGazeProvider {
   rcl_publisher_t ball_publisher_;
   rcl_publisher_t jpeg_publisher_;
   rcl_publisher_t perf_publisher_;
+  rcl_publisher_t range_publisher_;
   rclc_executor_t executor_;
   geometry_msgs__msg__Vector3 gaze_message_;
   std_msgs__msg__Empty blink_message_;
@@ -140,11 +168,13 @@ class MicroRosEyeNode : public IFreshGazeProvider {
   std_msgs__msg__String status_message_;
   std_msgs__msg__String ball_message_;
   std_msgs__msg__String perf_message_;
+  std_msgs__msg__String range_message_;
   std_msgs__msg__UInt8MultiArray jpeg_message_;
   char mode_buffer_[32];
   char status_buffer_[80];
   char ball_buffer_[192];
   char perf_buffer_[256];
+  char range_buffer_[96];
   uint8_t jpeg_tx_buffer_[kJpegTxCapacity];
 
   GazeState received_gaze_;
@@ -157,9 +187,14 @@ class MicroRosEyeNode : public IFreshGazeProvider {
   uint32_t next_entity_retry_ms_;
   uint32_t first_publish_fail_ms_;
   uint8_t publish_fail_count_;
+  uint8_t agent_ping_fail_streak_;
   bool blink_requested_;
   bool transport_configured_;
   bool credentials_valid_;
+  bool entities_need_destroy_;
+  /** Eye thread vs reconnect task coordination (not RCL ownership). */
+  std::atomic<bool> reconnect_busy_;
+  std::atomic<bool> reconnect_kick_;
   MicroRosSessionState session_state_;
   EyeControlMode control_mode_;
   uint8_t entities_init_depth_;

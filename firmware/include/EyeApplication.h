@@ -17,7 +17,9 @@
 #include "IdleEyeBehavior.h"
 #include "NvsKeyValueStore.h"
 #include "OtaUpdateService.h"
+#include "RangeObservation.h"
 #include "Rgb565Colors.h"
+#include "TofRangeService.h"
 #include "WifiCredentialStore.h"
 
 #if ROSEYES_ENABLE_MICROROS
@@ -50,6 +52,8 @@ class EyeApplication {
   static constexpr uint32_t kBallTelemetryPeriodMs = 200;
   /** How often to publish /eyes/perf telemetry. */
   static constexpr uint32_t kPerfTelemetryPeriodMs = 1000;
+  /** How often to sample TOF and publish /eyes/range. */
+  static constexpr uint32_t kRangeTelemetryPeriodMs = 100;
 
   /** Constructs the application with default blink and idle timings. */
   EyeApplication();
@@ -64,6 +68,7 @@ class EyeApplication {
   void renderIfDirty();
   void publishBallTelemetry(uint32_t now_ms);
   void publishPerfTelemetry(uint32_t now_ms);
+  void publishRangeTelemetry(uint32_t now_ms);
 
   ArduinoClock clock_;
   NvsKeyValueStore nvs_store_;
@@ -78,6 +83,7 @@ class EyeApplication {
   BallObservationStore ball_observation_store_;
   CameraJpegMailbox camera_jpeg_mailbox_;
   BallVisionService ball_vision_;
+  TofRangeService tof_range_;
 #if ROSEYES_ENABLE_MICROROS
   MicroRosEyeNode micro_ros_node_;
 #endif
@@ -90,5 +96,6 @@ class EyeApplication {
   uint32_t last_heartbeat_ms_;
   uint32_t last_ball_telemetry_ms_;
   uint32_t last_perf_telemetry_ms_;
+  uint32_t last_range_telemetry_ms_;
   uint32_t frames_since_perf_;
 };

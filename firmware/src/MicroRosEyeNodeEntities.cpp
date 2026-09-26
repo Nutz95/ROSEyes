@@ -91,6 +91,14 @@ bool MicroRosEyeNode::createEntities() {
     return false;
   }
   entities_init_depth_ = kStepPerfPub;
+  if (rclc_publisher_init_default(
+          &range_publisher_, &node_,
+          ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String),
+          "eyes/range") != RCL_RET_OK) {
+    destroyEntities();
+    return false;
+  }
+  entities_init_depth_ = kStepRangePub;
   if (rclc_executor_init(&executor_, &support_.context, 4, &allocator_) !=
       RCL_RET_OK) {
     destroyEntities();
@@ -116,6 +124,7 @@ bool MicroRosEyeNode::createEntities() {
   memset(&status_message_, 0, sizeof(status_message_));
   memset(&ball_message_, 0, sizeof(ball_message_));
   memset(&perf_message_, 0, sizeof(perf_message_));
+  memset(&range_message_, 0, sizeof(range_message_));
   memset(&jpeg_message_, 0, sizeof(jpeg_message_));
   publish_fail_count_ = 0;
   first_publish_fail_ms_ = 0;
@@ -125,6 +134,9 @@ bool MicroRosEyeNode::createEntities() {
 void MicroRosEyeNode::destroyEntities() {
   if (entities_init_depth_ >= kStepExecutor) {
     rclc_executor_fini(&executor_);
+  }
+  if (entities_init_depth_ >= kStepRangePub) {
+    (void)rcl_publisher_fini(&range_publisher_, &node_);
   }
   if (entities_init_depth_ >= kStepPerfPub) {
     (void)rcl_publisher_fini(&perf_publisher_, &node_);

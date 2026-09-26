@@ -12,6 +12,7 @@
 #include "NetworkCredentials.h"
 #include "PerfSnapshot.h"
 #include "PerfTelemetryFormatter.h"
+#include "RangeTelemetryFormatter.h"
 
 EyeApplication::EyeApplication()
     : credential_store_(nvs_store_),
@@ -34,6 +35,7 @@ EyeApplication::EyeApplication()
       last_heartbeat_ms_(0),
       last_ball_telemetry_ms_(0),
       last_perf_telemetry_ms_(0),
+      last_range_telemetry_ms_(0),
       frames_since_perf_(0) {}
 
 void EyeApplication::setup() {
@@ -51,14 +53,7 @@ void EyeApplication::setup() {
   cpu_load_sampler_.begin();
   Serial.println("Displays initialized (idle animation continues during WiFi/ROS)");
 
-#if ROSEYES_ENABLE_CAMERA_BALL
-  if (ball_vision_.begin()) {
-    Serial.println("Ball vision enabled (Autonomous tracks red ball)");
-  } else {
-    Serial.println("Ball vision unavailable; Autonomous uses idle only");
-  }
-#endif
-
+  // Start WiFi/OTA before camera/TOF so a stuck peripheral cannot brick updates.
   NetworkCredentials credentials;
   const bool have_credentials = credential_store_.loadOrSeed(credentials);
   if (have_credentials) {
@@ -68,6 +63,23 @@ void EyeApplication::setup() {
         "No WiFi credentials in NVS. Flash once with WIFI_SSID/WIFI_PASS "
         "(and MICROROS_AGENT_IP for micro-ROS) to enable OTA.");
   }
+
+#if ROSEYES_ENABLE_CAMERA_BALL
+  if (ball_vision_.begin()) {
+    Serial.println("Ball vision enabled (Autonomous tracks red ball)");
+  } else {
+    Serial.println("Ball vision unavailable; Autonomous uses idle only");
+  }
+#endif
+
+  // TOF I2C runs on its own FreeRTOS task — never blocks eyes/OTA if the bus hangs.
+#if ROSEYES_ENABLE_TOF
+  if (!tof_range_.start()) {
+    Serial.println("TOF Mini background start failed");
+  }
+#else
+  Serial.println("TOF disabled (ROSEYES_ENABLE_TOF=0)");
+#endif
 
 #if ROSEYES_ENABLE_MICROROS
   if (!have_credentials) {
@@ -147,14 +159,40 @@ void EyeApplication::publishPerfTelemetry(uint32_t now_ms) {
 #endif
 }
 
+void EyeApplication::publishRangeTelemetry(uint32_t now_ms) {
+#if !ROSEYES_ENABLE_TOF
+  (void)now_ms;
+  return;
+#else
+  if (!tof_range_.isReady()) {
+    return;
+  }
+  if ((now_ms - last_range_telemetry_ms_) < kRangeTelemetryPeriodMs) {
+    return;
+  }
+  last_range_telemetry_ms_ = now_ms;
+
+  const RangeObservation sample = tof_range_.snapshot();
+  char json[96];
+  if (RangeTelemetryFormatter::format(sample, json, sizeof(json)) < 0) {
+    return;
+  }
+#if ROSEYES_ENABLE_MICROROS
+  (void)micro_ros_node_.tryPublishRangeJson(json);
+#else
+  (void)json;
+#endif
+#endif
+}
+
 void EyeApplication::loop() {
+  const uint32_t frame_start_ms = clock_.millis();
   ota_service_.handle();
   uint32_t now_ms = clock_.millis();
 
 #if ROSEYES_ENABLE_MICROROS
-  micro_ros_node_.update(now_ms);
-  now_ms = clock_.millis();
-
+  // Fast path only: ingest gaze/blink/mode before render (no reconnect).
+  micro_ros_node_.spinIncoming(now_ms);
   if (micro_ros_node_.consumeBlinkRequest()) {
     blink_scheduler_.requestImmediateBlink();
   }
@@ -168,14 +206,22 @@ void EyeApplication::loop() {
 
   gaze_source_.selectGaze(now_ms, gaze_state_);
 #if ROSEYES_ENABLE_MICROROS
-  // Status heartbeat (~0.5 Hz) reads this muxed pose.
   micro_ros_node_.setReportedGaze(gaze_state_.x(), gaze_state_.y());
 #endif
   blink_scheduler_.update();
   renderIfDirty();
   ++frames_since_perf_;
+
+#if ROSEYES_ENABLE_MICROROS
+  // Heavy XRCE work after eyes so agent-down / createEntities cannot freeze lids.
+  now_ms = clock_.millis();
+  micro_ros_node_.maintainSession(now_ms);
+#endif
+
+  now_ms = clock_.millis();
   publishBallTelemetry(now_ms);
   publishPerfTelemetry(now_ms);
+  publishRangeTelemetry(now_ms);
 
   if ((now_ms - last_heartbeat_ms_) >= kHeartbeatPeriodMs) {
     last_heartbeat_ms_ = now_ms;
@@ -187,6 +233,15 @@ void EyeApplication::loop() {
         EyeControlModeParser::toCString(gaze_source_.controlMode()),
         gaze_state_.x(), gaze_state_.y(),
         blink_scheduler_.lidClosureAmount(), ball.found ? 1 : 0);
+    if (tof_range_.isReady()) {
+      const RangeObservation range = tof_range_.snapshot();
+      Serial.printf(" tof=%lumm st=%u ok=%d",
+                    static_cast<unsigned long>(range.distance_mm),
+                    static_cast<unsigned>(range.status),
+                    range.valid ? 1 : 0);
+    } else {
+      Serial.print(" tof=-");
+    }
 #if ROSEYES_ENABLE_MICROROS
     Serial.printf(" ros=%u rx=%d ip=%s\n",
                   static_cast<unsigned>(micro_ros_node_.sessionState()),
@@ -198,7 +253,10 @@ void EyeApplication::loop() {
     Serial.flush();
   }
 
-  delay(kFramePeriodMs);
+  const uint32_t elapsed_ms = clock_.millis() - frame_start_ms;
+  if (elapsed_ms < kFramePeriodMs) {
+    delay(kFramePeriodMs - elapsed_ms);
+  }
 }
 
 void EyeApplication::renderIfDirty() {

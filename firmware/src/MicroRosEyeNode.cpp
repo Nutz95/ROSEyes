@@ -12,6 +12,11 @@
 
 #include "EyeControlModeParser.h"
 
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+
+// Reconnect / alive-ping live in MicroRosEyeNodeReconnect.cpp.
+
 MicroRosEyeNode* MicroRosEyeNode::active_instance_ = nullptr;
 
 MicroRosEyeNode::MicroRosEyeNode()
@@ -22,9 +27,13 @@ MicroRosEyeNode::MicroRosEyeNode()
       next_entity_retry_ms_(0),
       first_publish_fail_ms_(0),
       publish_fail_count_(0),
+      agent_ping_fail_streak_(0),
       blink_requested_(false),
       transport_configured_(false),
       credentials_valid_(false),
+      entities_need_destroy_(false),
+      reconnect_busy_(false),
+      reconnect_kick_(false),
       session_state_(MicroRosSessionState::IdleOnly),
       control_mode_(EyeControlMode::Autonomous),
       entities_init_depth_(kStepNone),
@@ -42,6 +51,7 @@ MicroRosEyeNode::MicroRosEyeNode()
   memset(&ball_publisher_, 0, sizeof(ball_publisher_));
   memset(&jpeg_publisher_, 0, sizeof(jpeg_publisher_));
   memset(&perf_publisher_, 0, sizeof(perf_publisher_));
+  memset(&range_publisher_, 0, sizeof(range_publisher_));
   memset(&executor_, 0, sizeof(executor_));
   memset(&gaze_message_, 0, sizeof(gaze_message_));
   memset(&blink_message_, 0, sizeof(blink_message_));
@@ -50,11 +60,13 @@ MicroRosEyeNode::MicroRosEyeNode()
   memset(&status_message_, 0, sizeof(status_message_));
   memset(&ball_message_, 0, sizeof(ball_message_));
   memset(&perf_message_, 0, sizeof(perf_message_));
+  memset(&range_message_, 0, sizeof(range_message_));
   memset(&jpeg_message_, 0, sizeof(jpeg_message_));
   memset(mode_buffer_, 0, sizeof(mode_buffer_));
   memset(status_buffer_, 0, sizeof(status_buffer_));
   memset(ball_buffer_, 0, sizeof(ball_buffer_));
   memset(perf_buffer_, 0, sizeof(perf_buffer_));
+  memset(range_buffer_, 0, sizeof(range_buffer_));
   memset(jpeg_tx_buffer_, 0, sizeof(jpeg_tx_buffer_));
   agent_ip_[0] = '\0';
   received_gaze_.setNormalized(0.0f, 0.0f);
@@ -68,6 +80,7 @@ bool MicroRosEyeNode::begin(const NetworkCredentials& credentials) {
   credentials_valid_ = false;
   control_mode_ = EyeControlMode::Autonomous;
   session_state_ = MicroRosSessionState::Connecting;
+  entities_need_destroy_ = false;
 
   IPAddress parsed_ip;
   if (!parsed_ip.fromString(credentials.agent_ip)) {
@@ -82,7 +95,20 @@ bool MicroRosEyeNode::begin(const NetworkCredentials& credentials) {
   credentials_valid_ = true;
   allocator_ = rcl_get_default_allocator();
   next_entity_retry_ms_ = 0;
+  agent_ping_fail_streak_ = 0;
+  reconnect_busy_.store(false);
+  reconnect_kick_.store(true);
   Serial.printf("micro-ROS: async connect %s:%u\n", agent_ip_, agent_port_);
+
+  const BaseType_t ok = xTaskCreatePinnedToCore(
+      &MicroRosEyeNode::reconnectTaskEntry, "uros_reconnect",
+      kReconnectTaskStackWords, this, kReconnectTaskPriority, nullptr,
+      kReconnectTaskCore);
+  if (ok != pdPASS) {
+    Serial.println("micro-ROS: reconnect task create failed");
+    session_state_ = MicroRosSessionState::Faulted;
+    return false;
+  }
   return true;
 }
 
@@ -115,19 +141,33 @@ void MicroRosEyeNode::forceAutonomousMode() {
   }
 }
 
-void MicroRosEyeNode::dropSessionToConnecting(const char* reason) {
-  destroyEntities();
+void MicroRosEyeNode::dropSessionToConnecting(uint32_t now_ms,
+                                             const char* reason) {
+  // Mark Connecting first so eyes keep animating; heavy fini/create runs on the
+  // reconnect task — never on the blink/render thread.
   session_state_ = MicroRosSessionState::Connecting;
   forceAutonomousMode();
-  next_entity_retry_ms_ = 0;
+  entities_need_destroy_ = (entities_init_depth_ != kStepNone);
+  agent_ping_fail_streak_ = 0;
+  next_entity_retry_ms_ = now_ms + kEntityRetryAfterDropMs;
   publish_fail_count_ = 0;
   first_publish_fail_ms_ = 0;
+  reconnect_kick_.store(true);
   if (reason != nullptr) {
-    Serial.printf("micro-ROS: %s; will reconnect\n", reason);
+    Serial.printf("micro-ROS: %s; reconnect in %lums (bg task)\n", reason,
+                  static_cast<unsigned long>(kEntityRetryAfterDropMs));
   }
 }
 
-void MicroRosEyeNode::update(uint32_t now_ms) {
+void MicroRosEyeNode::spinIncoming(uint32_t /*now_ms*/) {
+  if (!credentials_valid_ || reconnect_busy_.load() ||
+      session_state_ != MicroRosSessionState::Ready) {
+    return;
+  }
+  rclc_executor_spin_some(&executor_, RCL_MS_TO_NS(1));
+}
+
+void MicroRosEyeNode::maintainSession(uint32_t now_ms) {
   if (!credentials_valid_ ||
       session_state_ == MicroRosSessionState::Faulted ||
       session_state_ == MicroRosSessionState::IdleOnly) {
@@ -137,44 +177,23 @@ void MicroRosEyeNode::update(uint32_t now_ms) {
 
   if (WiFi.status() != WL_CONNECTED) {
     if (session_state_ == MicroRosSessionState::Ready) {
-      dropSessionToConnecting("WiFi lost");
+      dropSessionToConnecting(now_ms, "WiFi lost");
     }
-    return;
-  }
-
-  if (!ensureTransportConfigured()) {
     return;
   }
 
   if (session_state_ != MicroRosSessionState::Ready) {
-    if (now_ms < next_entity_retry_ms_) {
-      return;
-    }
-    next_entity_retry_ms_ = now_ms + kEntityRetryIntervalMs;
-    if (rmw_uros_ping_agent(kAgentPingTimeoutMs, kAgentPingAttempts) !=
-        RMW_RET_OK) {
-      return;
-    }
-    if (createEntities()) {
-      session_state_ = MicroRosSessionState::Ready;
-      last_agent_ping_ms_ = now_ms;
-      Serial.println("micro-ROS entities ready");
-    } else {
-      Serial.println("micro-ROS entity create failed; retry later");
+    // Background task owns destroy/create/ping; wake it when backoff elapses.
+    if (now_ms >= next_entity_retry_ms_) {
+      reconnect_kick_.store(true);
     }
     return;
   }
 
-  if ((now_ms - last_agent_ping_ms_) >= kAgentAlivePingMs) {
-    last_agent_ping_ms_ = now_ms;
-    if (rmw_uros_ping_agent(kAgentPingTimeoutMs, kAgentPingAttempts) !=
-        RMW_RET_OK) {
-      dropSessionToConnecting("agent ping failed");
-      return;
-    }
+  if (reconnect_busy_.load()) {
+    return;
   }
 
-  rclc_executor_spin_some(&executor_, RCL_MS_TO_NS(5));
   publishPendingJpeg();
 
   if (now_ms - last_status_ms_ < kStatusPeriodMs) {
@@ -201,7 +220,7 @@ void MicroRosEyeNode::update(uint32_t now_ms) {
   }
   if (publish_fail_count_ >= kPublishFailLimit &&
       (now_ms - first_publish_fail_ms_) >= kPublishFailGraceMs) {
-    dropSessionToConnecting("status publish failed");
+    dropSessionToConnecting(now_ms, "status publish failed");
   }
 }
 
@@ -239,8 +258,8 @@ bool MicroRosEyeNode::tryPublishString(rcl_publisher_t& publisher,
                                        std_msgs__msg__String& message,
                                        char* buffer, size_t capacity,
                                        const char* json) {
-  if (session_state_ != MicroRosSessionState::Ready || json == nullptr ||
-      buffer == nullptr || capacity == 0) {
+  if (session_state_ != MicroRosSessionState::Ready || reconnect_busy_.load() ||
+      json == nullptr || buffer == nullptr || capacity == 0) {
     return false;
   }
   const size_t len = strlen(json);
@@ -264,6 +283,11 @@ bool MicroRosEyeNode::tryPublishPerfJson(const char* json) {
                           sizeof(perf_buffer_), json);
 }
 
+bool MicroRosEyeNode::tryPublishRangeJson(const char* json) {
+  return tryPublishString(range_publisher_, range_message_, range_buffer_,
+                          sizeof(range_buffer_), json);
+}
+
 void MicroRosEyeNode::setReportedGaze(float x, float y) {
   reported_gaze_x_ = x;
   reported_gaze_y_ = y;
@@ -274,8 +298,8 @@ void MicroRosEyeNode::setJpegMailbox(CameraJpegMailbox* mailbox) {
 }
 
 void MicroRosEyeNode::publishPendingJpeg() {
-  if (session_state_ != MicroRosSessionState::Ready || jpeg_mailbox_ == nullptr ||
-      !jpeg_mailbox_->hasJpeg()) {
+  if (session_state_ != MicroRosSessionState::Ready || reconnect_busy_.load() ||
+      jpeg_mailbox_ == nullptr || !jpeg_mailbox_->hasJpeg()) {
     return;
   }
   const size_t length =
