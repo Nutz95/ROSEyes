@@ -7,22 +7,22 @@
 void setUp() {}
 void tearDown() {}
 
-void test_left_gaze_unchanged() {
+void test_left_gaze_flips_y_keeps_x() {
   GazeState shared;
   shared.setNormalized(0.4f, -0.2f);
   const GazeState left =
       EyeMountPolicy::gazeForComposition(EyeId::Left, shared);
   TEST_ASSERT_FLOAT_WITHIN(0.0001f, 0.4f, left.x());
-  TEST_ASSERT_FLOAT_WITHIN(0.0001f, -0.2f, left.y());
+  TEST_ASSERT_FLOAT_WITHIN(0.0001f, 0.2f, left.y());
 }
 
-void test_right_gaze_negates_x() {
+void test_right_gaze_negates_x_and_y() {
   GazeState shared;
   shared.setNormalized(0.4f, -0.2f);
   const GazeState right =
       EyeMountPolicy::gazeForComposition(EyeId::Right, shared);
   TEST_ASSERT_FLOAT_WITHIN(0.0001f, -0.4f, right.x());
-  TEST_ASSERT_FLOAT_WITHIN(0.0001f, -0.2f, right.y());
+  TEST_ASSERT_FLOAT_WITHIN(0.0001f, 0.2f, right.y());
 }
 
 void test_panel_transforms_differ_per_eye() {
@@ -36,8 +36,8 @@ void test_panel_transforms_differ_per_eye() {
 
 int main(int argc, char** argv) {
   UNITY_BEGIN();
-  RUN_TEST(test_left_gaze_unchanged);
-  RUN_TEST(test_right_gaze_negates_x);
+  RUN_TEST(test_left_gaze_flips_y_keeps_x);
+  RUN_TEST(test_right_gaze_negates_x_and_y);
   RUN_TEST(test_panel_transforms_differ_per_eye);
   return UNITY_END();
 }

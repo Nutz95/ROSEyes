@@ -24,9 +24,10 @@ class EyeMountPolicy {
 
   /**
    * Gaze used while composing one eye so both mounts look the same way.
-   * Right eye negates horizontal gaze; left is unchanged.
+   * Right eye negates horizontal gaze; both eyes negate vertical gaze so
+   * shared +Y (look down, camera/ROS) matches the rotated GC9D01 mounts.
    * @param eye panel being composed
-   * @param shared_gaze user/ROS/idle gaze in shared coordinates
+   * @param shared_gaze user/ROS/idle/ball gaze in shared coordinates
    */
   static GazeState gazeForComposition(EyeId eye, const GazeState& shared_gaze);
 };
