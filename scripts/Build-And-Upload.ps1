@@ -28,6 +28,9 @@ $RepoRoot = Split-Path -Parent $PSScriptRoot
 . (Join-Path $PSScriptRoot "Common.ps1")
 . (Join-Path $PSScriptRoot "Resolve-PlatformIO.ps1")
 
+Set-RoseeyesPythonIoUtf8
+Update-RoseeyesPlatformIoPip
+
 if ($ListPorts) {
   $ports = @(Get-EspUsbSerialPorts)
   if ($ports.Count -eq 0) {

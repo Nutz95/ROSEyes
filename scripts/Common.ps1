@@ -222,6 +222,236 @@ function Get-RoseeyesEspotaScript {
   return $hit.FullName
 }
 
+# Locates esptool.py under the PlatformIO packages tree.
+function Get-RoseeyesEsptoolScript {
+  $packages = Join-Path $env:USERPROFILE ".platformio\packages"
+  $hit = Get-ChildItem -Path $packages -Recurse -Filter "esptool.py" -ErrorAction SilentlyContinue |
+    Select-Object -First 1
+  if (-not $hit) {
+    throw "esptool.py not found under $packages (install an espressif32 PlatformIO platform once)."
+  }
+  return $hit.FullName
+}
+
+# PlatformIO venv Python (Windows).
+function Get-RoseeyesPlatformIoPython {
+  $python = Join-Path $env:USERPROFILE ".platformio\penv\Scripts\python.exe"
+  if (Test-Path $python) { return $python }
+  return $null
+}
+
+# Avoid cp1252 UnicodeEncodeError when PIO/esptool print progress; silence pip nag.
+function Set-RoseeyesPythonIoUtf8 {
+  $env:PYTHONUTF8 = "1"
+  $env:PYTHONIOENCODING = "utf-8"
+  $env:PIP_DISABLE_PIP_VERSION_CHECK = "1"
+  try {
+    [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+    $global:OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+  } catch {
+    # Non-interactive hosts may lack a console.
+  }
+}
+
+# Paths where NVIDIA PyIndex may have injected pypi.ngc.nvidia.com.
+function Get-RoseeyesUserPipIniPaths {
+  @(
+    (Join-Path $env:APPDATA "pip\pip.ini")
+    (Join-Path $env:USERPROFILE "pip\pip.ini")
+    (Join-Path $env:USERPROFILE "pip.ini")
+    "C:\ProgramData\pip\pip.ini"
+  )
+}
+
+# Strip NVIDIA NGC extra-index from user/site pip.ini (backup *.roseyes-bak). Permanent fix.
+function Disable-RoseeyesNvidiaPipIndex {
+  $changed = $false
+  foreach ($path in Get-RoseeyesUserPipIniPaths) {
+    if (-not (Test-Path $path)) { continue }
+    $raw = Get-Content -Raw -Path $path
+    if ($raw -match 'ROSEyes:\s*NVIDIA NGC') { continue }
+    if ($raw -notmatch '(?m)^\s*https://pypi\.ngc\.nvidia\.com\s*$') { continue }
+
+    $bak = "$path.roseyes-bak"
+    if (-not (Test-Path $bak)) {
+      Copy-Item -Path $path -Destination $bak -Force
+    }
+    # Keep useful flags; drop broken/slow NGC mirrors that fail DNS on this LAN.
+    $clean = @"
+# ROSEyes: NVIDIA NGC extra-index removed (backup next to this file).
+[global]
+no-cache-dir = true
+index-url = https://pypi.org/simple
+"@
+    try {
+      Set-Content -Path $path -Value $clean.TrimEnd() -Encoding ascii
+      Write-Host "Cleaned NVIDIA pip index from $path (backup $bak)"
+      $changed = $true
+    } catch {
+      Write-Warning "Could not write $path (need admin?): $_"
+    }
+  }
+  if (-not $changed) {
+    Write-Host "No NVIDIA NGC pip.ini found (already clean)"
+  }
+}
+
+# Run a pip command against PyPI only (ignore NVIDIA / site pip.ini extra indexes).
+function Invoke-RoseeyesPip {
+  param(
+    [Parameter(Mandatory = $true)][string]$Python,
+    [Parameter(Mandatory = $true)][string[]]$PipArgs
+  )
+  Set-RoseeyesPythonIoUtf8
+  $savedCfg = $env:PIP_CONFIG_FILE
+  $savedExtra = $env:PIP_EXTRA_INDEX_URL
+  $savedIndex = $env:PIP_INDEX_URL
+  $savedTrusted = $env:PIP_TRUSTED_HOST
+  $prevEap = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    # Windows null device: load no pip.ini (user/global NVIDIA NGC mirrors).
+    $env:PIP_CONFIG_FILE = "nul"
+    Remove-Item Env:\PIP_EXTRA_INDEX_URL -ErrorAction SilentlyContinue
+    Remove-Item Env:\PIP_TRUSTED_HOST -ErrorAction SilentlyContinue
+    $env:PIP_INDEX_URL = "https://pypi.org/simple"
+
+    $sub = $PipArgs[0]
+    $rest = @()
+    if ($PipArgs.Count -gt 1) { $rest = $PipArgs[1..($PipArgs.Count - 1)] }
+    $cli = @(
+      $sub
+      "--isolated"
+      "--disable-pip-version-check"
+      "--index-url", "https://pypi.org/simple"
+    ) + $rest
+    & $Python -m pip @cli 2>&1 | ForEach-Object { Write-Host ([string]$_) }
+    return [int]$LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $prevEap
+    if ($null -eq $savedCfg) {
+      Remove-Item Env:\PIP_CONFIG_FILE -ErrorAction SilentlyContinue
+    } else {
+      $env:PIP_CONFIG_FILE = $savedCfg
+    }
+    if ($null -eq $savedExtra) {
+      Remove-Item Env:\PIP_EXTRA_INDEX_URL -ErrorAction SilentlyContinue
+    } else {
+      $env:PIP_EXTRA_INDEX_URL = $savedExtra
+    }
+    if ($null -eq $savedIndex) {
+      Remove-Item Env:\PIP_INDEX_URL -ErrorAction SilentlyContinue
+    } else {
+      $env:PIP_INDEX_URL = $savedIndex
+    }
+    if ($null -eq $savedTrusted) {
+      Remove-Item Env:\PIP_TRUSTED_HOST -ErrorAction SilentlyContinue
+    } else {
+      $env:PIP_TRUSTED_HOST = $savedTrusted
+    }
+  }
+}
+
+# Best-effort: upgrade pip in the PlatformIO venv (kills the "new release of pip" spam).
+function Update-RoseeyesPlatformIoPip {
+  Disable-RoseeyesNvidiaPipIndex
+  $python = Get-RoseeyesPlatformIoPython
+  if (-not $python) {
+    Write-Host "PlatformIO penv python not found - skip pip upgrade"
+    return
+  }
+  Write-Host "Updating PlatformIO pip ($python)..."
+  [void](Invoke-RoseeyesPip -Python $python -PipArgs @(
+      "install", "-U", "pip"
+    ))
+}
+
+# USB-CDC bootloader entry (Arduino IDE style).
+function Invoke-Roseeyes1200BpsTouch {
+  param([Parameter(Mandatory = $true)][string]$Port)
+  try {
+    $sp = New-Object System.IO.Ports.SerialPort $Port, 1200
+    $sp.Open()
+    Start-Sleep -Milliseconds 50
+    $sp.Close()
+    $sp.Dispose()
+  } catch {
+    Write-Warning "1200bps touch on $Port failed: $_"
+  }
+  Start-Sleep -Seconds 2
+}
+
+# Serial-upload a WSL-built image without Windows PlatformIO rebuild / click UTF-8 crash.
+function Invoke-RoseeyesPrebuiltSerialUpload {
+  param(
+    [Parameter(Mandatory = $true)][string]$BuildDir,
+    [Parameter(Mandatory = $true)][string]$Port,
+    [int]$Baud = 460800,
+    [switch]$ManualBootloader
+  )
+
+  Set-RoseeyesPythonIoUtf8
+  $firmware = Join-Path $BuildDir "firmware.bin"
+  $bootloader = Join-Path $BuildDir "bootloader.bin"
+  $partitions = Join-Path $BuildDir "partitions.bin"
+  foreach ($path in @($firmware, $bootloader, $partitions)) {
+    if (-not (Test-Path $path)) {
+      throw "Missing flash artifact: $path"
+    }
+  }
+
+  $esptool = Get-RoseeyesEsptoolScript
+  $python = Get-RoseeyesPlatformIoPython
+  if (-not $python) { $python = "python" }
+
+  Write-Host "Serial upload (prebuilt esptool, no PIO rebuild) to $Port @ $Baud"
+  Write-Host "  build: $BuildDir"
+  Write-Host "  esptool: $esptool"
+
+  if ($ManualBootloader) {
+    Write-Host "Manual bootloader: hold B, tap R, release B, then press Enter."
+    [void](Read-Host)
+  } else {
+    Write-Host "Auto-reset: 1200bps touch + wait. Close Serial Monitor first."
+    Invoke-Roseeyes1200BpsTouch -Port $Port
+  }
+
+  # Standard Arduino-ESP32 offsets for seeed_xiao_esp32s3.
+  $args = @(
+    $esptool
+    "--chip", "esp32s3"
+    "--port", $Port
+    "--baud", "$Baud"
+    "--before", "default_reset"
+    "--after", "hard_reset"
+    "write_flash", "-z"
+    "--flash_mode", "dio"
+    "--flash_freq", "80m"
+    "--flash_size", "8MB"
+    "0x0", $bootloader
+    "0x8000", $partitions
+    "0x10000", $firmware
+  )
+
+  $prevEap = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    $out = & $python @args 2>&1
+    $code = [int]$LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $prevEap
+  }
+  foreach ($line in $out) {
+    Write-Host ([string]$line)
+  }
+  if ($code -ne 0) {
+    Write-Error "esptool serial upload failed (exit $code)"
+  } else {
+    Write-Host "Serial upload finished OK (exit 0)"
+  }
+  return $code
+}
+
 # OTA-upload a prebuilt firmware.bin without invoking PlatformIO rebuild
 # (critical after WSL micro-ROS builds — Windows cannot rebuild libmicroros).
 function Invoke-RoseeyesPrebuiltOtaUpload {
@@ -231,15 +461,14 @@ function Invoke-RoseeyesPrebuiltOtaUpload {
     [int]$OtaPort = 3232
   )
 
+  Set-RoseeyesPythonIoUtf8
   if (-not (Test-Path $FirmwareBin)) {
     throw "Prebuilt firmware not found: $FirmwareBin"
   }
 
   $espota = Get-RoseeyesEspotaScript
-  $python = Join-Path $env:USERPROFILE ".platformio\penv\Scripts\python.exe"
-  if (-not (Test-Path $python)) {
-    $python = "python"
-  }
+  $python = Get-RoseeyesPlatformIoPython
+  if (-not $python) { $python = "python" }
 
   Write-Host "OTA upload (prebuilt, no rebuild) via espota to ${OtaIp}:$OtaPort"
   Write-Host "  bin: $FirmwareBin"
@@ -267,7 +496,7 @@ function Invoke-RoseeyesPrebuiltOtaUpload {
 
 # Uploads via serial or espota (dedicated PlatformIO envs, no --project-option).
 # Always uses -d ProjectDir so the caller's working directory is unchanged.
-# For WSL-built micro-ROS images, prefer Invoke-RoseeyesPrebuiltOtaUpload instead.
+# For WSL-built micro-ROS images, prefer Invoke-RoseeyesPrebuilt* helpers instead.
 function Invoke-RoseeyesUpload {
   param(
     [Parameter(Mandatory = $true)][string]$Pio,
@@ -278,6 +507,7 @@ function Invoke-RoseeyesUpload {
     [switch]$ManualBootloader
   )
 
+  Set-RoseeyesPythonIoUtf8
   $uploadEnv = Get-RoseeyesUploadEnvName -EnvName $EnvName -OtaIp $OtaIp -ManualBootloader:$ManualBootloader
 
   if ($OtaIp) {

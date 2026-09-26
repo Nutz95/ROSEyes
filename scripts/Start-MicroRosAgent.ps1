@@ -4,30 +4,18 @@
 .DESCRIPTION
   Resolves MicroXRCEAgent.exe from MICROROS_AGENT_EXE, MICROROS_AGENT_HOME,
   a sibling of ROS2_WINDOWS_SETUP, %LOCALAPPDATA%\ROSEyes\MicroXRCEAgent, or PATH.
-  Stops the legacy Docker agent container if it is still running.
+  No Docker - host ROS talks to this Windows agent directly.
   First-time setup: .\scripts\Install-MicroRosAgent.ps1
 .EXAMPLE
   .\scripts\Start-MicroRosAgent.ps1
 #>
 param(
   [int]$Port = 8888,
-  [string]$AgentExe = $env:MICROROS_AGENT_EXE,
-  [string]$ContainerName = "roseyes-micro-ros-agent",
-  [switch]$KeepDockerAgent
+  [string]$AgentExe = $env:MICROROS_AGENT_EXE
 )
 
 $ErrorActionPreference = "Stop"
 . (Join-Path $PSScriptRoot "Common.ps1")
-
-function Stop-LegacyDockerAgent {
-  param([string]$Name)
-  if (-not (Get-Command docker -ErrorAction SilentlyContinue)) { return }
-  $running = docker ps --filter "name=^/${Name}$" --format "{{.Names}}" 2>$null
-  if ($running -eq $Name) {
-    Write-Host "Stopping legacy Docker agent '$Name' (Windows agent replaces it)..."
-    docker stop $Name | Out-Null
-  }
-}
 
 $exe = Resolve-RoseeyesMicroXrceAgentExe -Preferred $AgentExe
 if (-not $exe) {
@@ -39,10 +27,6 @@ Build it once (Visual Studio + CMake):
 Or set MICROROS_AGENT_EXE / MICROROS_AGENT_HOME.
 Expected under: $agentHome
 "@
-}
-
-if (-not $KeepDockerAgent) {
-  Stop-LegacyDockerAgent -Name $ContainerName
 }
 
 Get-CimInstance Win32_Process -Filter "Name = 'MicroXRCEAgent.exe'" -ErrorAction SilentlyContinue |

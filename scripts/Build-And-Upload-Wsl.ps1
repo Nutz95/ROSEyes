@@ -22,6 +22,9 @@ $RepoRoot = Split-Path -Parent $PSScriptRoot
 . (Join-Path $PSScriptRoot "Common.ps1")
 . (Join-Path $PSScriptRoot "Resolve-PlatformIO.ps1")
 
+Set-RoseeyesPythonIoUtf8
+Update-RoseeyesPlatformIoPip
+
 $FirmwareDir = Join-Path $RepoRoot "firmware"
 $FirmwareInclude = Join-Path $FirmwareDir "include"
 [void](Set-RoseeyesSeedBuildFlags -RequireAgentIp -FirmwareIncludeDir $FirmwareInclude)
@@ -93,13 +96,11 @@ if ($OtaIp) {
   # Never run pio -e *_ota on Windows: it rebuilds micro-ROS and crashes.
   $uploadExit = Invoke-RoseeyesPrebuiltOtaUpload -FirmwareBin $FirmwareBin -OtaIp $OtaIp
 } else {
-  Write-Warning "Serial upload after WSL still uses Windows PlatformIO and may rebuild micro-ROS."
-  Write-Warning "Prefer -OtaIp <device-ip> once the board is on WiFi."
-  $Pio = Get-PlatformIoCommand
-  $uploadExit = Invoke-RoseeyesUpload `
-    -Pio $Pio `
-    -ProjectDir $FirmwareDir `
-    -EnvName "xiao_esp32s3" `
+  # Flash the WSL-built image with esptool — do not run Windows `pio upload`
+  # (rebuilds micro-ROS + can UnicodeEncodeError under cp1252 consoles).
+  $BuildDir = Join-Path $FirmwareDir ".pio\build\xiao_esp32s3"
+  $uploadExit = Invoke-RoseeyesPrebuiltSerialUpload `
+    -BuildDir $BuildDir `
     -Port $Port `
     -ManualBootloader:$ManualBootloader
 }

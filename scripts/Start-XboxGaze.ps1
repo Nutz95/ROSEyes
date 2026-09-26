@@ -45,23 +45,12 @@ if (-not $needPygame) {
   if ($LASTEXITCODE -ne 0) { $needPygame = $true }
 }
 if ($needPygame) {
-  Write-Host "Installing pygame into ROS Python (PyPI only)..."
-  $savedExtra = $env:PIP_EXTRA_INDEX_URL
-  try {
-    Remove-Item Env:\PIP_EXTRA_INDEX_URL -ErrorAction SilentlyContinue
-    $env:PIP_INDEX_URL = "https://pypi.org/simple"
-    & $RosPython -m pip install --isolated `
-      --index-url "https://pypi.org/simple" `
-      -r $Requirements
-    if ($LASTEXITCODE -ne 0) {
-      throw "pip install pygame failed ($LASTEXITCODE)"
-    }
-  } finally {
-    if ($null -eq $savedExtra) {
-      Remove-Item Env:\PIP_EXTRA_INDEX_URL -ErrorAction SilentlyContinue
-    } else {
-      $env:PIP_EXTRA_INDEX_URL = $savedExtra
-    }
+  Write-Host "Installing host Python deps from requirements.txt..."
+  $code = Invoke-RoseeyesPip -Python $RosPython -PipArgs @(
+    "install", "-U", "-r", $Requirements
+  )
+  if ($code -ne 0) {
+    throw "pip install -r requirements failed ($code)"
   }
   Set-Content -Path $stamp -Value $wantHash -NoNewline
 }
