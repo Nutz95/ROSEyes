@@ -17,7 +17,8 @@ struct FloodPoint {
   uint16_t row;
 };
 
-uint8_t g_hits[kMaskBytes];
+uint8_t g_hits_red[kMaskBytes];
+uint8_t g_hits_green[kMaskBytes];
 uint8_t g_visited[kMaskBytes];
 FloodPoint g_flood_stack[kFloodStackCap];
 
@@ -70,10 +71,6 @@ bool BallColorDetector::isGreenRgb565(uint16_t pixel) {
   }
   return green5 >= red + BallVisionConfig::kGreenRgbDominate &&
          green5 >= blue + BallVisionConfig::kGreenRgbDominate;
-}
-
-bool BallColorDetector::colorHit(uint16_t pixel, BallColor color) {
-  return (color == BallColor::Red) ? isRedRgb565(pixel) : isGreenRgb565(pixel);
 }
 
 bool BallColorDetector::blobPasses(const BlobStats& blob, int width, int height,
@@ -143,50 +140,23 @@ void BallColorDetector::writeObservation(const BlobStats& blob, int width,
   out.color = color;
 }
 
-void BallColorDetector::detectColor(const uint16_t* pixels, int width,
-                                    int height, BallObservation& out,
-                                    bool swap_bytes, BallColor color) const {
+void BallColorDetector::findBestBlob(const uint8_t* hits, int width, int height,
+                                     int step, int grid_w, int grid_h,
+                                     int min_area, int min_w, int min_h,
+                                     float min_fill, BallColor color,
+                                     BallObservation& out) const {
   out.found = false;
   out.x = 0.0f;
   out.y = 0.0f;
   out.diameter = 0.0f;
   out.color = BallColor::None;
-  if (pixels == nullptr || width <= 1 || height <= 1 ||
-      color == BallColor::None) {
+  if (hits == nullptr || color == BallColor::None) {
     return;
   }
 
-  const bool qvga = width >= 280;
-  const int step =
-      qvga ? BallVisionConfig::kDetectStepQvga : BallVisionConfig::kDetectStepQqvga;
-  const int min_area_cfg =
-      qvga ? BallVisionConfig::kMinAreaQvga : BallVisionConfig::kMinAreaQqvga;
-  const int min_w =
-      qvga ? BallVisionConfig::kMinWidthQvga : BallVisionConfig::kMinWidthQqvga;
-  const int min_h =
-      qvga ? BallVisionConfig::kMinHeightQvga : BallVisionConfig::kMinHeightQqvga;
-  const float min_fill = qvga ? BallVisionConfig::kMinFillRatioQvga
-                              : BallVisionConfig::kMinFillRatioQqvga;
-  const int min_area = min_area_cfg / (step * step);
-
-  const int grid_w = (width + step - 1) / step;
-  const int grid_h = (height + step - 1) / step;
   const int cells = grid_w * grid_h;
-  if (cells <= 0 || cells > kMaxGridCells) {
-    return;
-  }
   const size_t bytes = static_cast<size_t>((cells + 7) / 8);
-  memset(g_hits, 0, bytes);
   memset(g_visited, 0, bytes);
-
-  for (int row = 0, gy = 0; row < height; row += step, ++gy) {
-    const uint16_t* line = pixels + static_cast<size_t>(row) * width;
-    for (int col = 0, gx = 0; col < width; col += step, ++gx) {
-      if (colorHit(maybeSwap(line[col], swap_bytes), color)) {
-        maskSet(g_hits, gy * grid_w + gx);
-      }
-    }
-  }
 
   BlobStats best{};
   float best_score = -1.0f;
@@ -195,7 +165,7 @@ void BallColorDetector::detectColor(const uint16_t* pixels, int width,
   for (int gy = 0; gy < grid_h; ++gy) {
     for (int gx = 0; gx < grid_w; ++gx) {
       const int seed = gy * grid_w + gx;
-      if (!maskGet(g_hits, seed) || maskGet(g_visited, seed)) {
+      if (!maskGet(hits, seed) || maskGet(g_visited, seed)) {
         continue;
       }
 
@@ -207,6 +177,7 @@ void BallColorDetector::detectColor(const uint16_t* pixels, int width,
       blob.min_y = height;
       blob.max_x = -1;
       blob.max_y = -1;
+      bool truncated = false;
 
       int sp = 0;
       stack[sp++] = {static_cast<uint16_t>(gx), static_cast<uint16_t>(gy)};
@@ -241,17 +212,22 @@ void BallColorDetector::detectColor(const uint16_t* pixels, int width,
             continue;
           }
           const int ni = ny * grid_w + nx;
-          if (!maskGet(g_hits, ni) || maskGet(g_visited, ni)) {
+          if (!maskGet(hits, ni) || maskGet(g_visited, ni)) {
             continue;
           }
           maskSet(g_visited, ni);
-          if (sp < kFloodStackCap) {
-            stack[sp++] = {static_cast<uint16_t>(nx),
-                           static_cast<uint16_t>(ny)};
+          if (sp >= kFloodStackCap) {
+            // Ceiling: huge components (lamps) — discard rather than under-grow.
+            truncated = true;
+            continue;
           }
+          stack[sp++] = {static_cast<uint16_t>(nx), static_cast<uint16_t>(ny)};
         }
       }
 
+      if (truncated) {
+        continue;
+      }
       float score = 0.0f;
       if (blobPasses(blob, width, height, step, min_area, min_w, min_h,
                      min_fill, &score) &&
@@ -271,14 +247,69 @@ void BallColorDetector::detectColor(const uint16_t* pixels, int width,
 void BallColorDetector::detect(const uint16_t* pixels, int width, int height,
                                BallObservation& out, bool swap_bytes,
                                BallColor preferred) const {
+  out.found = false;
+  out.x = 0.0f;
+  out.y = 0.0f;
+  out.diameter = 0.0f;
+  out.color = BallColor::None;
+  if (pixels == nullptr || width <= 1 || height <= 1) {
+    return;
+  }
+
+  const bool qvga = width >= BallVisionConfig::kQvgaWidthThreshold;
+  const int step =
+      qvga ? BallVisionConfig::kDetectStepQvga : BallVisionConfig::kDetectStepQqvga;
+  const int min_area_cfg =
+      qvga ? BallVisionConfig::kMinAreaQvga : BallVisionConfig::kMinAreaQqvga;
+  const int min_w =
+      qvga ? BallVisionConfig::kMinWidthQvga : BallVisionConfig::kMinWidthQqvga;
+  const int min_h =
+      qvga ? BallVisionConfig::kMinHeightQvga : BallVisionConfig::kMinHeightQqvga;
+  const float min_fill = qvga ? BallVisionConfig::kMinFillRatioQvga
+                              : BallVisionConfig::kMinFillRatioQqvga;
+  const int min_area = min_area_cfg / (step * step);
+
+  const int grid_w = (width + step - 1) / step;
+  const int grid_h = (height + step - 1) / step;
+  const int cells = grid_w * grid_h;
+  if (cells <= 0 || cells > kMaxGridCells) {
+    return;
+  }
+  const size_t bytes = static_cast<size_t>((cells + 7) / 8);
+  const bool want_green = BallVisionConfig::kEnableGreenFallback;
+  memset(g_hits_red, 0, bytes);
+  if (want_green) {
+    memset(g_hits_green, 0, bytes);
+  }
+
+  // Single frame scan → red (+ optional green) hit masks.
+  for (int row = 0, gy = 0; row < height; row += step, ++gy) {
+    const uint16_t* line = pixels + static_cast<size_t>(row) * width;
+    for (int col = 0, gx = 0; col < width; col += step, ++gx) {
+      const uint16_t pixel = maybeSwap(line[col], swap_bytes);
+      const int index = gy * grid_w + gx;
+      if (isRedRgb565(pixel)) {
+        maskSet(g_hits_red, index);
+      } else if (want_green && isGreenRgb565(pixel)) {
+        maskSet(g_hits_green, index);
+      }
+    }
+  }
+
   const BallColor primary =
       (preferred == BallColor::Green) ? BallColor::Green : BallColor::Red;
   const BallColor secondary =
       (primary == BallColor::Red) ? BallColor::Green : BallColor::Red;
+  const uint8_t* primary_hits =
+      (primary == BallColor::Red) ? g_hits_red : g_hits_green;
+  const uint8_t* secondary_hits =
+      (secondary == BallColor::Red) ? g_hits_red : g_hits_green;
 
-  detectColor(pixels, width, height, out, swap_bytes, primary);
-  if (out.found || !BallVisionConfig::kEnableGreenFallback) {
+  findBestBlob(primary_hits, width, height, step, grid_w, grid_h, min_area,
+               min_w, min_h, min_fill, primary, out);
+  if (out.found || !want_green) {
     return;
   }
-  detectColor(pixels, width, height, out, swap_bytes, secondary);
+  findBestBlob(secondary_hits, width, height, step, grid_w, grid_h, min_area,
+               min_w, min_h, min_fill, secondary, out);
 }

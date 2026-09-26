@@ -19,6 +19,8 @@ class BallVisionConfig {
   /** Detect every Nth pixel — QVGA uses 1 (far/small blobs); QQVGA uses 2. */
   static constexpr int kDetectStepQvga = 1;
   static constexpr int kDetectStepQqvga = 2;
+  /** Width >= this uses QVGA thresholds (QVGA=320, QQVGA=160). */
+  static constexpr int kQvgaWidthThreshold = 280;
 
   /** Min blob area in pixels (scaled by 1/step^2 in detector). */
   static constexpr int kMinAreaQvga = 18;

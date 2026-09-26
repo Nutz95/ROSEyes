@@ -12,8 +12,7 @@
 class BallColorDetector {
  public:
   /**
-   * Scans preferred color first, then the other if green fallback is enabled.
-   * Picks the best connected blob (not a frame-wide union of all hits).
+   * One pixel pass builds red/green masks; flood prefers sticky color first.
    * @param pixels row-major RGB565 (host endian unless swap_bytes)
    * @param width frame width
    * @param height frame height
@@ -41,11 +40,11 @@ class BallColorDetector {
   static bool isRedRgb565(uint16_t pixel);
   /** Saturated green (rejects yellow lamps). */
   static bool isGreenRgb565(uint16_t pixel);
-  static bool colorHit(uint16_t pixel, BallColor color);
-  /** One-color scan; writes out when the best blob passes filters. */
-  void detectColor(const uint16_t* pixels, int width, int height,
-                   BallObservation& out, bool swap_bytes,
-                   BallColor color) const;
+  /** Flood a pre-filled hit mask; fail-closed if BFS stack overflows. */
+  void findBestBlob(const uint8_t* hits, int width, int height, int step,
+                    int grid_w, int grid_h, int min_area, int min_w, int min_h,
+                    float min_fill, BallColor color,
+                    BallObservation& out) const;
   static bool blobPasses(const BlobStats& blob, int width, int height,
                          int step, int min_area, int min_w, int min_h,
                          float min_fill, float* score_out);
