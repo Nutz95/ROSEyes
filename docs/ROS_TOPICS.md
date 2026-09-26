@@ -22,6 +22,7 @@ Architecture of onboard camera vs ROS: [CAMERA_BALL_TRACKING.md](CAMERA_BALL_TRA
 | `/eyes/status` | `std_msgs/msg/String` | ESP → host | Heartbeat / debug |
 | `/eyes/ball` | `std_msgs/msg/String` | ESP → host | Ball detection telemetry (JSON text) |
 | `/eyes/perf` | `std_msgs/msg/String` | ESP → host | Heap / loop / WiFi / ball fps (JSON) |
+| `/eyes/range` | `std_msgs/msg/String` | ESP → host | TOF Mini distance (JSON, ~10 Hz) |
 | `/eyes/camera/snap` | `std_msgs/msg/Empty` | host → ESP | Request one JPEG snapshot |
 | `/eyes/camera/jpeg` | `std_msgs/msg/UInt8MultiArray` | ESP → host | JPEG bytes (on-demand) |
 
@@ -35,7 +36,7 @@ flowchart LR
 
   Host -->|gaze_blink_mode_snap| Agent
   Agent <-->|XRCE_UDP| Esp
-  Esp -->|status_ball_jpeg_perf| Agent
+  Esp -->|status_ball_jpeg_perf_range| Agent
   Agent --> Host
 ```
 
@@ -192,6 +193,27 @@ When `found` is false for ~2.5 s, gaze mux falls back to idle (Autonomous). Host
 ros2 topic echo /eyes/perf
 # or Start-RosEyes.ps1 → 1 Debug cockpit / 9 Echo perf
 ```
+
+---
+
+## `/eyes/range`
+
+**Type:** `std_msgs/msg/String` — JSON ~10 Hz when the Waveshare TOF Mini ACKs on I2C.
+
+| Key | Meaning |
+|-----|---------|
+| `mm` | Distance in millimeters (register 0x24) |
+| `ok` | `true` when distance is in Mini span (~20–8000 mm); `dis_status` alone is not authoritative on this module |
+| `status` | Sensor `dis_status` (often `1` while ranging is still good) |
+| `strength` | Signal strength |
+| `seq` | Monotonic sample counter |
+
+```powershell
+ros2 topic echo /eyes/range
+# or Start-RosEyes.ps1 → 1 Debug cockpit (footer line)
+```
+
+Pins: SDA=GPIO5 (D4), SCL=GPIO6 (D5) on **Wire1** (separate from the camera SCCB bus). If the sensor is absent, boot logs `TOF Mini not detected`.
 
 ---
 

@@ -10,7 +10,7 @@ Remote control: publish normalized gaze on `/eyes/gaze` (`geometry_msgs/Vector3`
 | MCU | [XIAO ESP32-S3 Sense](https://www.seeedstudio.com/XIAO-ESP32S3-Sense-p-5639.html) |
 | Base | [Grove Base for XIAO](https://www.seeedstudio.com/Grove-Shield-for-Seeeduino-XIAO-p-4621.html) |
 | Displays | [Spotpear Electronic EYE 0.71″ dual LCD (GC9D01)](https://spotpear.com/shop/Raspberry-Pi-ESP32-Pico-Arduino-STM32-51-0.71-inch-Round-LCD-EYE-Double.html) |
-| Range (future) | [Waveshare TOF Laser Range Sensor Mini](https://www.waveshare.com/tof-laser-range-sensor-mini.htm) |
+| Range | [Waveshare TOF Laser Range Sensor Mini](https://www.waveshare.com/tof-laser-range-sensor-mini.htm) → `/eyes/range` |
 
 Architecture details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)  
 ROS topics + examples: [docs/ROS_TOPICS.md](docs/ROS_TOPICS.md)  
@@ -27,9 +27,8 @@ Agent / contributor guide: [AGENTS.md](AGENTS.md)
 - WiFi / agent credentials seeded at flash time from env vars into **ESP32 NVS**
 - Host tools: PowerShell scripts, Xbox → ROS publisher (pygame + Windows ROS)
 - Native unit tests + source guardrails (1 class / file, size, docs)
-- Debug cockpit (Tk): gaze pad / Xbox, ball view, JPEG snap, `/eyes/perf`
-
-TOF I2C is wired and stubbed (`TofRangeSensorStub`) but **not** driven yet.
+- Debug cockpit (Tk): gaze pad / Xbox, ball view, JPEG snap, `/eyes/perf`, `/eyes/range`
+- Waveshare TOF Mini on I2C (`TofRangeSensor`) → `/eyes/range` JSON when present
 
 <p align="center">
   <img src="docs/Gui.png" alt="ROSEyes debug cockpit: ball detection overlay and camera JPEG snap" width="900" />
@@ -74,7 +73,7 @@ tests/        Guardrail scripts
 
 If panels stay black after a successful flash, tie **BL1/BL2** (backlight) to **3V3** (module-dependent).
 
-### TOF (I2C, reserved)
+### TOF Mini (I2C → `/eyes/range`)
 
 | Signal | XIAO | GPIO |
 |--------|------|------|
@@ -82,6 +81,8 @@ If panels stay black after a successful flash, tie **BL1/BL2** (backlight) to **
 | SCL | D5 | 6 |
 | 5V | 5V | — |
 | GND | GND | — |
+
+Firmware uses **Wire1** on these pins (camera OV2640 keeps its own SCCB on Wire). Default 7-bit address `0x08`.
 
 ---
 

@@ -12,17 +12,17 @@ flowchart LR
   Eyes[Dual_GC9D01]
   Cam[OV2640_Sense_onboard]
   Nvs[NVS_credentials]
-  Tof[TOF_Mini_stub]
+  Tof[TOF_Mini_I2C]
 
   Xbox -->|eyes/gaze| HostRos
   MaixCam -->|eyes/gaze| HostRos
   HostRos -->|gaze_blink_mode| Agent
   Agent <-->|XRCE_DDS_UDP| Esp
-  Esp -->|status_ball| Agent
+  Esp -->|status_ball_perf_range| Agent
   Esp --> Eyes
   Esp --> Cam
   Esp --> Nvs
-  Esp -.-> Tof
+  Esp --> Tof
 ```
 
 Onboard camera tracking (dual-core, mode, gaze mux): **[CAMERA_BALL_TRACKING.md](CAMERA_BALL_TRACKING.md)**  
@@ -81,11 +81,11 @@ flowchart TB
 | `BlinkScheduler` | Random 2–3 s blink timing |
 | `IdleEyeBehavior` | Random 2D saccades + fixations when no fresh provider |
 | `WifiCredentialStore` | NVS load/seed/save (`loadOrSeed`) |
-| `MicroRosEyeNode` | WiFi XRCE, gaze/blink/mode subs, status/ball pubs |
+| `MicroRosEyeNode` | WiFi XRCE; spin before eyes, reconnect after; status/ball/perf/range/jpeg |
 | `BallVisionService` | OV2640 + FreeRTOS core1 detect → `BallObservation` |
 | `BallGazeProvider` | Observation → `IFreshGazeProvider` (same contract as ROS gaze) |
-| `EyeApplication` | Orchestration + dirty-state rendering |
-| `TofRangeSensorStub` | Reserved API for later I2C TOF |
+| `EyeApplication` | Orchestration + dirty-state rendering + frame-budget pacing |
+| `TofRangeSensor` | Waveshare TOF Mini I2C → `RangeObservation` / `/eyes/range` |
 
 Design rules: **1 class = 1 header/source pair**, files **&lt; 400 lines**, **&lt; 30 public methods**, documented public APIs. Enforced by `tests/guardrails/run_guardrails.py`.
 
@@ -127,6 +127,5 @@ micro-ROS client distro: **jazzy**. Host: `$env:ROS2_WINDOWS_SETUP` → `Activat
 
 ## Future work
 
-1. Implement `TofRangeSensorStub` → real Waveshare TOF Mini I2C driver; optionally publish `/eyes/range`.
-2. Camera ROI search / sticky color lock (see camera doc).
-3. Optional emotion / animation bank from Spotpear demos if RAM allows.
+1. Camera ROI search / sticky color lock refinements (see camera doc).
+2. Optional emotion / animation bank from Spotpear demos if RAM allows.

@@ -15,7 +15,6 @@ Guidance for coding agents and human contributors.
 
 ## Don’t
 
-- Drive the TOF sensor until a dedicated task asks for it (stub only).
 - Put multiple types in one header/source file.
 - Add inline imports in Python (imports stay at module top).
 - Edit the Cursor plan file under `.cursor/plans/`.
