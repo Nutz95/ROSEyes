@@ -10,6 +10,7 @@ import time
 import rclpy
 
 from xbox_gaze.gaze_publisher import GazeRosPublisher
+from xbox_gaze.mode_hold import ModeHold
 from xbox_gaze.quit_key import quit_requested
 from xbox_gaze.stick_reader import XboxGazeStickReader
 
@@ -49,19 +50,19 @@ def main(argv: list[str] | None = None) -> int:
     """Entry point: Xbox stick -> ROS /eyes/gaze (+ keep mode=piloted)."""
     args = parse_args(argv or sys.argv[1:])
     period_s = 1.0 / max(args.rate_hz, 1.0)
-    mode_period_s = max(args.mode_period_s, 0.2)
 
     reader = XboxGazeStickReader(deadzone=args.deadzone)
     reader.open()
 
     rclpy.init()
     publisher = GazeRosPublisher()
+    mode_hold = ModeHold(publisher.publish_mode, period_s=args.mode_period_s)
+    mode_hold.set_piloted(True)
     print("Publishing Xbox left stick to /eyes/gaze")
     print("Keeping /eyes/mode=piloted (required — autonomous ignores host gaze)")
     print("A = blink. Release stick -> stop gaze pubs; ESP idle after timeout.")
     print(f"rate={args.rate_hz} Hz while active. Press q to return to menu.")
 
-    next_mode_s = 0.0
     try:
         while rclpy.ok():
             if quit_requested():
@@ -69,9 +70,7 @@ def main(argv: list[str] | None = None) -> int:
                 break
 
             now_s = time.monotonic()
-            if now_s >= next_mode_s:
-                publisher.publish_mode("piloted")
-                next_mode_s = now_s + mode_period_s
+            mode_hold.tick(now_s)
 
             sample = reader.read()
             gaze_y = -sample.y if args.invert_y else sample.y

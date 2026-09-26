@@ -2,23 +2,26 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Callable
-from typing import Any
 
 from geometry_msgs.msg import Vector3
 from rclpy.node import Node
 from std_msgs.msg import Empty, String, UInt8MultiArray
 
+from roseyes_debug.ball_telemetry import BallTelemetry
+from roseyes_debug.perf_telemetry import PerfTelemetry
+from roseyes_debug.range_telemetry import RangeTelemetry
+
 
 class DebugRosBridge(Node):
-    """Publishes commands and receives status/ball/perf/jpeg."""
+    """Publishes commands and receives status/ball/perf/range/jpeg."""
 
     def __init__(
         self,
         on_status: Callable[[str], None],
-        on_ball: Callable[[dict[str, Any]], None],
-        on_perf: Callable[[dict[str, Any]], None],
+        on_ball: Callable[[BallTelemetry], None],
+        on_perf: Callable[[PerfTelemetry], None],
+        on_range: Callable[[RangeTelemetry], None],
         on_jpeg: Callable[[bytes], None],
     ) -> None:
         """Creates pubs/subs used by the Tk cockpit."""
@@ -26,6 +29,7 @@ class DebugRosBridge(Node):
         self._on_status = on_status
         self._on_ball = on_ball
         self._on_perf = on_perf
+        self._on_range = on_range
         self._on_jpeg = on_jpeg
 
         self._gaze_pub = self.create_publisher(Vector3, "eyes/gaze", 10)
@@ -36,6 +40,7 @@ class DebugRosBridge(Node):
         self.create_subscription(String, "eyes/status", self._on_status_msg, 10)
         self.create_subscription(String, "eyes/ball", self._on_ball_msg, 10)
         self.create_subscription(String, "eyes/perf", self._on_perf_msg, 10)
+        self.create_subscription(String, "eyes/range", self._on_range_msg, 10)
         self.create_subscription(
             UInt8MultiArray, "eyes/camera/jpeg", self._on_jpeg_msg, 10
         )
@@ -66,18 +71,13 @@ class DebugRosBridge(Node):
         self._on_status(message.data)
 
     def _on_ball_msg(self, message: String) -> None:
-        try:
-            payload = json.loads(message.data)
-        except json.JSONDecodeError:
-            payload = {"raw": message.data}
-        self._on_ball(payload)
+        self._on_ball(BallTelemetry.from_json(message.data))
 
     def _on_perf_msg(self, message: String) -> None:
-        try:
-            payload = json.loads(message.data)
-        except json.JSONDecodeError:
-            payload = {"raw": message.data}
-        self._on_perf(payload)
+        self._on_perf(PerfTelemetry.from_json(message.data))
+
+    def _on_range_msg(self, message: String) -> None:
+        self._on_range(RangeTelemetry.from_json(message.data))
 
     def _on_jpeg_msg(self, message: UInt8MultiArray) -> None:
         self._on_jpeg(bytes(message.data))

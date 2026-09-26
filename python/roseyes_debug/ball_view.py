@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import tkinter as tk
-from typing import Any
+
+from roseyes_debug.ball_telemetry import BallTelemetry
 
 
 _COLOR_FILL = {
@@ -25,27 +26,18 @@ class BallView:
         self.info = tk.StringVar(master=parent.winfo_toplevel(), value="ball: waiting…")
         self._draw_empty()
 
-    def update(self, payload: dict[str, Any]) -> None:
-        """Redraws from a ball JSON dict."""
-        found = bool(payload.get("found", False))
-        x = float(payload.get("x", 0.0))
-        y = float(payload.get("y", 0.0))
-        diameter = float(payload.get("diameter", 0.0))
-        fps = float(payload.get("fps", 0.0))
-        framesize = str(payload.get("framesize", "?"))
-        color = str(payload.get("color", "none")).lower()
-        seq = payload.get("seq", "?")
-
+    def update(self, sample: BallTelemetry) -> None:
+        """Redraws from a typed ball sample."""
         self.canvas.delete("all")
         mid = self._size / 2.0
         self.canvas.create_line(mid, 0, mid, self._size, fill="#2a3a4a")
         self.canvas.create_line(0, mid, self._size, mid, fill="#2a3a4a")
 
-        if found:
-            px = (x + 1.0) * 0.5 * self._size
-            py = (y + 1.0) * 0.5 * self._size
-            radius = max(4.0, diameter * self._size * 0.5)
-            fill = _COLOR_FILL.get(color, "#888888")
+        if sample.found:
+            px = (sample.x + 1.0) * 0.5 * self._size
+            py = (sample.y + 1.0) * 0.5 * self._size
+            radius = max(4.0, sample.diameter * self._size * 0.5)
+            fill = _COLOR_FILL.get(sample.color, "#888888")
             self.canvas.create_oval(
                 px - radius,
                 py - radius,
@@ -58,12 +50,14 @@ class BallView:
                 px - 3, py - 3, px + 3, py + 3, fill=fill, outline=""
             )
             self.info.set(
-                f"found {color}  x={x:.2f} y={y:.2f}  "
-                f"d={diameter:.2f}  {framesize}  {fps:.1f} fps  seq={seq}"
+                f"found {sample.color}  x={sample.x:.2f} y={sample.y:.2f}  "
+                f"d={sample.diameter:.2f}  {sample.framesize}  "
+                f"{sample.fps:.1f} fps  seq={sample.seq}"
             )
         else:
             self.info.set(
-                f"not found  {framesize}  {fps:.1f} fps  color={color}  seq={seq}"
+                f"not found  {sample.framesize}  {sample.fps:.1f} fps  "
+                f"color={sample.color}  seq={sample.seq}"
             )
 
     def _draw_empty(self) -> None:

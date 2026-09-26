@@ -7,14 +7,17 @@ import threading
 import time
 import tkinter as tk
 from tkinter import ttk
-from typing import Any
 
 import rclpy
 from PIL import Image, ImageTk
 
+from roseyes_debug.ball_telemetry import BallTelemetry
 from roseyes_debug.ball_view import BallView
 from roseyes_debug.gaze_pad import GazePad
+from roseyes_debug.perf_telemetry import PerfTelemetry
+from roseyes_debug.range_telemetry import RangeTelemetry
 from roseyes_debug.ros_bridge import DebugRosBridge
+from xbox_gaze.mode_hold import ModeHold
 from xbox_gaze.stick_reader import XboxGazeStickReader
 
 
@@ -32,18 +35,20 @@ class DebugCockpitApp:
             on_status=self._on_status,
             on_ball=self._on_ball,
             on_perf=self._on_perf,
+            on_range=self._on_range,
             on_jpeg=self._on_jpeg,
         )
         self._photo: ImageTk.PhotoImage | None = None
         self._input_mode = tk.StringVar(master=self._root, value="pad")
         self._status_text = tk.StringVar(master=self._root, value="status: —")
         self._perf_text = tk.StringVar(master=self._root, value="perf: —")
+        self._range_text = tk.StringVar(master=self._root, value="range: —")
         self._snap_text = tk.StringVar(master=self._root, value="JPEG: click Snap")
         self._xbox_reader: XboxGazeStickReader | None = None
         self._xbox_error = tk.StringVar(master=self._root, value="")
         self._spinning = True
-        self._next_mode_s = 0.0
-        self._hold_piloted = True
+        self._mode_hold = ModeHold(self._bridge.publish_mode, period_s=1.0)
+        self._mode_hold.set_piloted(True)
 
         self._build_ui()
 
@@ -119,6 +124,7 @@ class DebugCockpitApp:
         footer.grid(row=2, column=0, sticky="ew")
         ttk.Label(footer, textvariable=self._status_text).pack(anchor="w")
         ttk.Label(footer, textvariable=self._perf_text).pack(anchor="w")
+        ttk.Label(footer, textvariable=self._range_text).pack(anchor="w")
 
     def _on_input_mode(self) -> None:
         pad_mode = self._input_mode.get() == "pad"
@@ -126,15 +132,13 @@ class DebugCockpitApp:
         self._xbox_error.set("")
         if pad_mode:
             self._close_xbox()
-            self._hold_piloted = True
-            self._bridge.publish_mode("piloted")
+            self._mode_hold.set_piloted(True)
         else:
             try:
                 if self._xbox_reader is None:
                     self._xbox_reader = XboxGazeStickReader()
                     self._xbox_reader.open()
-                self._hold_piloted = True
-                self._bridge.publish_mode("piloted")
+                self._mode_hold.set_piloted(True)
             except RuntimeError as exc:
                 self._xbox_error.set(str(exc))
                 self._input_mode.set("pad")
@@ -146,17 +150,14 @@ class DebugCockpitApp:
             self._xbox_reader = None
 
     def _publish_gaze(self, x: float, y: float) -> None:
-        self._hold_piloted = True
-        self._bridge.publish_mode("piloted")
+        self._mode_hold.set_piloted(True)
         self._bridge.publish_gaze(x, y)
 
     def _mode_auto(self) -> None:
-        self._hold_piloted = False
-        self._bridge.publish_mode("autonomous")
+        self._mode_hold.set_piloted(False)
 
     def _mode_piloted(self) -> None:
-        self._hold_piloted = True
-        self._bridge.publish_mode("piloted")
+        self._mode_hold.set_piloted(True)
 
     def _blink(self) -> None:
         self._bridge.publish_blink()
@@ -168,40 +169,14 @@ class DebugCockpitApp:
     def _on_status(self, text: str) -> None:
         self._root.after(0, lambda: self._status_text.set(f"status: {text}"))
 
-    def _on_ball(self, payload: dict[str, Any]) -> None:
-        self._root.after(0, lambda: self._ball.update(payload))
+    def _on_ball(self, sample: BallTelemetry) -> None:
+        self._root.after(0, lambda: self._ball.update(sample))
 
-    def _on_perf(self, payload: dict[str, Any]) -> None:
-        def apply() -> None:
-            if "raw" in payload:
-                self._perf_text.set(f"perf: {payload['raw']}")
-                return
-            self._perf_text.set(
-                "perf: heap={heap_pct}% ({heap_free}/{heap_size}) "
-                "psram={psram_pct}% ({psram_free}/{psram_size}) "
-                "cpu0={cpu0_pct}% cpu1={cpu1_pct}% loop={loop_hz}Hz "
-                "rssi={wifi_rssi} ball_fps={ball_fps} up={uptime_s}s".format(
-                    **{
-                        k: payload.get(k, "?")
-                        for k in (
-                            "heap_pct",
-                            "heap_free",
-                            "heap_size",
-                            "psram_pct",
-                            "psram_free",
-                            "psram_size",
-                            "cpu0_pct",
-                            "cpu1_pct",
-                            "loop_hz",
-                            "wifi_rssi",
-                            "ball_fps",
-                            "uptime_s",
-                        )
-                    }
-                )
-            )
+    def _on_perf(self, sample: PerfTelemetry) -> None:
+        self._root.after(0, lambda: self._perf_text.set(sample.status_line()))
 
-        self._root.after(0, apply)
+    def _on_range(self, sample: RangeTelemetry) -> None:
+        self._root.after(0, lambda: self._range_text.set(sample.status_line()))
 
     def _on_jpeg(self, payload: bytes) -> None:
         def apply() -> None:
@@ -224,9 +199,7 @@ class DebugCockpitApp:
         if not self._spinning:
             return
         now = time.monotonic()
-        if self._hold_piloted and now >= self._next_mode_s:
-            self._bridge.publish_mode("piloted")
-            self._next_mode_s = now + 1.0
+        self._mode_hold.tick(now)
         if self._input_mode.get() == "xbox" and self._xbox_reader is not None:
             try:
                 sample = self._xbox_reader.read()
@@ -236,7 +209,7 @@ class DebugCockpitApp:
                 gaze_y = sample.y
                 self._pad.set_gaze(sample.x, gaze_y)
                 if abs(sample.x) > 0.12 or abs(gaze_y) > 0.12:
-                    self._hold_piloted = True
+                    self._mode_hold.set_piloted(True)
                     self._bridge.publish_gaze(sample.x, gaze_y)
                 if sample.blink_pressed:
                     self._bridge.publish_blink()
